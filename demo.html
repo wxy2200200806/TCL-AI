@@ -1,0 +1,521 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TCL计划Agent</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <section class="hero">
+        <p class="eyebrow">Personal Task Planning Agent</p>
+        <h1>TCL计划Agent</h1>
+        <h2>输入真实任务，Agent帮你拆解、追踪和总结。</h2>
+      </section>
+
+      <main id="rootGrid" class="setup-grid">
+        <section class="panel">
+          <div class="section-title"><span>01</span><h3>AI配置</h3></div>
+          <div class="demo-banner">当前为演示模式，API Key 不会被保存。</div>
+          <form id="configForm" class="config-form">
+            <label>Provider<select id="provider"><option value="DeepSeek">DeepSeek</option><option value="OpenAI">OpenAI</option><option value="Custom">自定义OpenAI兼容接口</option></select></label>
+            <label>API Key<input id="apiKey" type="password" placeholder="只保存在当前页面内存，刷新后消失" /></label>
+            <label>Base URL<input id="baseUrl" value="https://api.deepseek.com" /></label>
+            <label>Model<input id="model" value="deepseek-v4-flash" /></label>
+            <button class="primary-action" type="submit">暂存演示配置</button>
+          </form>
+          <p id="configMsg" class="warning-text">未配置AI服务。可用本地示例拆解，但必须明确：本地示例，不是AI结果。</p>
+        </section>
+
+        <section class="panel">
+          <div class="section-title"><span>02</span><h3>添加任务</h3></div>
+          <form id="taskForm" class="add-form">
+            <label>任务名称（必填）<input id="name" /></label>
+            <label>任务说明（可选）<input id="description" /></label>
+            <label>任务类型<select id="type"><option value="today">今日任务：今天最好完成</option><option value="short">短期任务：未来1-14天推进</option><option value="long">长期任务：超过14天持续推进</option></select></label>
+            <label>截止日期（必填）<input id="deadline" type="date" /></label>
+            <button class="primary-action">创建任务</button>
+          </form>
+        </section>
+
+        <section id="tasksPanel" class="panel task-pool-panel" style="display:none">
+          <div class="section-title"><span>03</span><h3>任务列表</h3></div>
+          <div id="notice"></div>
+          <div id="columns" class="task-columns"></div>
+        </section>
+
+        <section id="askPanel" class="panel ask-panel" style="display:none">
+          <div class="section-title"><span>04</span><h3>问问Agent</h3></div>
+          <p id="selectedTaskText" class="muted"></p>
+          <div id="chatWindow" class="chat-window"></div>
+          <div class="ask-box">
+            <input id="question" placeholder="例如：这个报告第一步怎么做？" />
+            <button id="askBtn" class="primary-action compact">发送</button>
+          </div>
+          <div class="summary-actions">
+            <button id="clearChatBtn" class="secondary-action">清空当前任务对话</button>
+            <button id="copyLastBtn" class="secondary-action">复制最后一条AI回答</button>
+          </div>
+        </section>
+
+        <section id="visualPanel" class="panel visual-panel" style="display:none">
+          <div class="section-title"><span>05</span><h3>可视化与总结</h3></div>
+          <div id="visualContent"></div>
+        </section>
+      </main>
+    </div>
+
+    <script>
+      const key = 'tcl-plan-agent:v2:demo-tasks';
+      const chatKey = 'tcl-plan-agent:v2:demo-chat-messages';
+      const recordKey = 'tcl-plan-agent:v2:demo-step-records';
+      const labels = { today: '今天要做', short: '近期推进', long: '长期追踪' };
+      const typeLabels = { today: '今日任务', short: '短期任务', long: '长期任务' };
+      let tasks = JSON.parse(localStorage.getItem(key) || '[]').map(normalizeTask);
+      let chatMessages = JSON.parse(localStorage.getItem(chatKey) || '{}');
+      let stepRecords = JSON.parse(localStorage.getItem(recordKey) || '[]');
+      let weeklySummary = null;
+      let monthlySummary = null;
+      let selectedTaskId = tasks[0]?.id || '';
+      let demoConfig = null;
+      const $ = (id) => document.getElementById(id);
+      const fixMojibake = (text) => {
+        const value = String(text || '');
+        if (!/[ÃÂäåæçèéÊËÌÍÎÏÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞß]/.test(value)) return value;
+        try {
+          const bytes = Uint8Array.from([...value].map((char) => char.charCodeAt(0) & 255));
+          return new TextDecoder('utf-8').decode(bytes);
+        } catch {
+          return value;
+        }
+      };
+      const esc = (text) => fixMojibake(text).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+      function todayISO() {
+        const now = new Date();
+        return new Date(now.getTime() - now.getTimezoneOffset() * 60 * 1000).toISOString().slice(0, 10);
+      }
+      $('deadline').value = todayISO();
+
+      function save() {
+        localStorage.setItem(key, JSON.stringify(tasks));
+        localStorage.setItem(chatKey, JSON.stringify(chatMessages));
+        localStorage.setItem(recordKey, JSON.stringify(stepRecords));
+      }
+      function normalizeTask(task) {
+        return {
+          id: String(task.id || Date.now()),
+          name: task.name || task.title || '未命名任务',
+          description: task.description || '',
+          type: task.type || 'today',
+          deadline: task.deadline || task.deadlineDate || todayISO(),
+          steps: Array.isArray(task.steps) ? task.steps.map((step) => ({
+            id: String(step.id || `${Date.now()}-${Math.random()}`),
+            title: step.title || step.name || '未命名步骤',
+            done: Boolean(step.done),
+            source: step.source || '用户步骤'
+          })) : []
+        };
+      }
+      function daysText(deadline) {
+        const one = 24 * 60 * 60 * 1000;
+        const today = new Date(`${todayISO()}T00:00:00`);
+        const end = new Date(`${deadline}T00:00:00`);
+        const days = Math.ceil((end - today) / one);
+        if (days > 0) return `距离截止还有${days}天`;
+        if (days === 0) return '今天截止';
+        return `已逾期${Math.abs(days)}天`;
+      }
+      function progress(task) {
+        const total = task.steps.length;
+        const done = task.steps.filter((step) => step.done).length;
+        return { total, done, percent: total ? Math.round((done / total) * 100) : 0 };
+      }
+      function nextStep(task) {
+        return task.steps.find((step) => !step.done)?.title || '暂无未完成步骤';
+      }
+      function render() {
+        save();
+        const hasTasks = tasks.length > 0;
+        $('tasksPanel').style.display = hasTasks ? 'block' : 'none';
+        $('askPanel').style.display = hasTasks ? 'block' : 'none';
+        $('visualPanel').style.display = hasTasks ? 'block' : 'none';
+        $('rootGrid').className = hasTasks ? 'workspace-grid' : 'setup-grid';
+        $('selectedTaskText').textContent = hasTasks ? `当前任务：${tasks.find((task) => task.id === selectedTaskId)?.name || tasks[0].name}` : '';
+        renderChat();
+        renderVisuals();
+        $('columns').innerHTML = Object.entries(labels).map(([type, label]) => {
+          const list = tasks.filter((task) => task.type === type);
+          return `<div><h3>${label}</h3><div class="task-list">${list.length ? list.map(taskCard).join('') : '<div class="empty-state">暂无任务。</div>'}</div></div>`;
+        }).join('');
+      }
+      function renderChat() {
+        if (!tasks.length) return;
+        const task = tasks.find((item) => item.id === selectedTaskId) || tasks[0];
+        const messages = chatMessages[task.id] || [];
+        $('chatWindow').innerHTML = messages.length
+          ? messages.map((message) => `<div class="chat-message ${message.role}"><div class="chat-bubble"><small>${message.role === 'user' ? '你' : 'Agent'} · ${new Date(message.time).toLocaleTimeString()}</small><p>${esc(message.content)}</p></div></div>`).join('')
+          : '<div class="empty-state">当前任务还没有对话。你可以连续追问，历史上下文会一起发送给AI。</div>';
+        $('chatWindow').scrollTop = $('chatWindow').scrollHeight;
+      }
+      function taskCard(task) {
+        const p = progress(task);
+        return `<article class="task-card ${task.id === selectedTaskId ? 'selected' : ''}" data-select="${task.id}">
+          <div class="task-card-head"><h4>${esc(task.name)}</h4><span>${daysText(task.deadline)}</span></div>
+          <p>${esc(task.description || '无说明')}</p>
+          <div class="mini-progress"><div><span>完成进度 ${p.done}/${p.total}</span><strong>${p.percent}%</strong></div><div class="progress-track"><i style="width:${p.percent}%"></i></div></div>
+          ${task.type === 'long' ? `<p class="next-step">下一个未完成步骤：${esc(nextStep(task))}</p>` : ''}
+          <div class="button-row"><button data-ai="${task.id}">AI拆解</button><button data-local="${task.id}">本地示例拆解</button><button class="danger-button" data-delete="${task.id}">删除任务</button></div>
+          ${task.steps.length ? `<div class="steps-box"><b>${esc(task.steps[0].source)}</b>${task.steps.map((step, index) => `<div class="step-row"><input data-done="${task.id}:${step.id}" type="checkbox" ${step.done ? 'checked' : ''}/><input data-title="${task.id}:${step.id}" value="${esc(step.title)}"/><button data-up="${task.id}:${step.id}" ${index === 0 ? 'disabled' : ''}>上移</button><button data-down="${task.id}:${step.id}" ${index === task.steps.length - 1 ? 'disabled' : ''}>下移</button><button class="danger-button" data-delstep="${task.id}:${step.id}">删除</button></div>`).join('')}<button class="secondary-action" data-addstep="${task.id}">新增步骤</button></div>` : ''}
+        </article>`;
+      }
+      function makeSteps(titles, source) {
+        return titles.map((title) => ({ id: `${Date.now()}-${Math.random()}`, title, done: false, source }));
+      }
+      function localSteps(task) {
+        const steps = task.type === 'long'
+          ? ['明确长期任务的阶段目标', '收集背景资料和关键输入', '拆出主要工作模块', '完成第一个可验证产出', '检查当前产出和问题清单', '整理阶段成果并准备下一步']
+          : ['明确任务目标和最终交付物', '收集完成任务所需资料', '整理关键信息和约束条件', '完成主要内容初稿', '检查遗漏和风险点', '修改并确认最终结果'];
+        return makeSteps(steps, '本地示例，不是AI结果');
+      }
+      function addStepRecord(task, step, completed) {
+        stepRecords.push({
+          id: `record-${Date.now()}-${Math.random()}`,
+          taskId: task.id,
+          stepId: step.id,
+          taskType: typeLabels[task.type],
+          taskName: task.name,
+          stepTitle: step.title,
+          date: todayISO(),
+          completed,
+          createdAt: new Date().toISOString()
+        });
+      }
+      function latestRecords(records = stepRecords) {
+        const map = new Map();
+        records.forEach((record, index) => map.set(`${record.date}:${record.taskId}:${record.stepId}`, { ...record, order: index }));
+        return [...map.values()];
+      }
+      function recentDates(days) {
+        const today = new Date(`${todayISO()}T00:00:00`);
+        return Array.from({ length: days }, (_, index) => {
+          const date = new Date(today.getTime() - (days - 1 - index) * 86400000);
+          return date.toISOString().slice(0, 10);
+        });
+      }
+      function dateStats(date, records = latestRecords()) {
+        const dayRecords = records.filter((record) => record.date === date);
+        const completed = dayRecords.filter((record) => record.completed);
+        const todayStepIds = new Set(tasks.filter((task) => task.type === 'today').flatMap((task) => task.steps.map((step) => `${task.id}:${step.id}`)));
+        const completedToday = new Set(completed.filter((record) => record.taskType === '今日任务').map((record) => `${record.taskId}:${record.stepId}`));
+        const todayDone = [...todayStepIds].filter((id) => completedToday.has(id)).length;
+        return {
+          date,
+          todayDone,
+          todayTotal: todayStepIds.size,
+          todayTaskCompleted: todayStepIds.size > 0 && todayDone === todayStepIds.size,
+          shortDone: completed.filter((record) => record.taskType === '短期任务').length,
+          longDone: completed.filter((record) => record.taskType === '长期任务').length
+        };
+      }
+      function renderVisuals() {
+        if (!tasks.length) return;
+        if (!stepRecords.length) {
+          $('visualContent').innerHTML = `<div class="empty-state">暂无完成记录，勾选任务步骤后会自动生成可视化。</div><div class="summary-actions"><button id="weekSummaryBtn" class="secondary-action">生成本周总结</button><button id="monthSummaryBtn" class="secondary-action">生成本月总结</button></div>${shareCard()}`;
+          bindSummaryButtons();
+          return;
+        }
+        const todaySteps = tasks.filter((task) => task.type === 'today').flatMap((task) => task.steps);
+        const today = {
+          ...dateStats(todayISO()),
+          todayDone: todaySteps.filter((step) => step.done).length,
+          todayTotal: todaySteps.length,
+          todayTaskCompleted: todaySteps.length > 0 && todaySteps.every((step) => step.done)
+        };
+        const trend = recentDates(7).map((date) => dateStats(date));
+        $('visualContent').innerHTML = `
+          <div class="visual-summary">
+            <div class="visual-grid">
+              <div class="summary-card"><h4>今日任务完成状态</h4><div class="big-number"><strong>${today.todayDone}/${today.todayTotal}</strong></div>${miniProgress(today.todayTotal ? Math.round(today.todayDone / today.todayTotal * 100) : 0, today.todayTotal === 0 ? '暂无今日任务步骤' : today.todayTaskCompleted ? '今日任务已完成' : '今日任务未完成')}<p>按当前今日任务的全部步骤勾选状态判断。</p></div>
+              <div class="summary-card"><h4>短期任务今日推进</h4><div class="big-number"><strong>${today.shortDone}</strong><span>个步骤</span></div>${bar(Math.min(100, today.shortDone * 20))}<p>只统计今天真实勾选且当前未被取消的短期任务步骤。</p></div>
+              <div class="summary-card"><h4>长期任务今日推进</h4><div class="big-number"><strong>${today.longDone}</strong><span>个步骤</span></div>${bar(Math.min(100, today.longDone * 20))}<p>长期任务只展示真实推进记录。</p></div>
+            </div>
+            <div class="summary-card"><h4>最近7天完成趋势</h4><div class="trend-list">${trend.map((day) => `<div class="trend-row"><span>${day.date.slice(5)}</span><b>${day.todayTaskCompleted ? '今日任务完成' : '今日任务未完成'}</b><div class="trend-bar"><span>短期 ${day.shortDone}</span>${bar(Math.min(100, day.shortDone * 20))}</div><div class="trend-bar"><span>长期 ${day.longDone}</span>${bar(Math.min(100, day.longDone * 20))}</div></div>`).join('')}</div></div>
+            <div class="summary-actions"><button id="weekSummaryBtn" class="secondary-action">生成本周总结</button><button id="monthSummaryBtn" class="secondary-action">生成本月总结</button></div>
+            <div class="summary-grid">${summaryCard('本周总结', weeklySummary, 'week')}${summaryCard('本月总结', monthlySummary, 'month')}</div>
+            ${shareCard()}
+          </div>`;
+        bindSummaryButtons();
+        bindShareButtons();
+      }
+      function miniProgress(value, label) {
+        return `<div class="mini-progress"><div><span>${label}</span><strong>${value}%</strong></div><div class="progress-track"><i style="width:${value}%"></i></div></div>`;
+      }
+      function bar(value) {
+        return `<div class="progress-track bar-track"><i style="width:${value}%"></i></div>`;
+      }
+      function bindSummaryButtons() {
+        $('weekSummaryBtn')?.addEventListener('click', () => { weeklySummary = buildPeriodSummary(weekStart(), todayISO(), '下周'); renderVisuals(); });
+        $('monthSummaryBtn')?.addEventListener('click', () => { monthlySummary = buildPeriodSummary(`${todayISO().slice(0, 8)}01`, todayISO(), '下月'); renderVisuals(); });
+      }
+      function weekStart() {
+        const date = new Date(`${todayISO()}T00:00:00`);
+        const day = date.getDay() || 7;
+        date.setDate(date.getDate() - day + 1);
+        return date.toISOString().slice(0, 10);
+      }
+      function datesBetween(start, end) {
+        const dates = [];
+        const current = new Date(`${start}T00:00:00`);
+        const last = new Date(`${end}T00:00:00`);
+        while (current <= last) {
+          dates.push(current.toISOString().slice(0, 10));
+          current.setDate(current.getDate() + 1);
+        }
+        return dates;
+      }
+      function buildPeriodSummary(start, end, nextLabel) {
+        const records = latestRecords().filter((record) => record.date >= start && record.date <= end);
+        if (!records.length) return null;
+        const completed = records.filter((record) => record.completed);
+        const counts = new Map();
+        completed.forEach((record) => counts.set(record.taskId, (counts.get(record.taskId) || 0) + 1));
+        const progressed = new Set(completed.map((record) => record.taskId));
+        const mostProgressed = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([taskId, count]) => `${tasks.find((task) => task.id === taskId)?.name || '已删除任务'}（${count}步）`);
+        const noProgressTasks = tasks.filter((task) => progress(task).percent < 100 && !progressed.has(task.id)).map((task) => task.name);
+        const longProgress = tasks.filter((task) => task.type === 'long').map((task) => `${task.name}：${completed.filter((record) => record.taskId === task.id).length}步`).filter((line) => !line.endsWith('：0步'));
+        return {
+          todayTaskCompletedDays: datesBetween(start, end).filter((date) => dateStats(date, records).todayTaskCompleted).length,
+          shortStepCount: completed.filter((record) => record.taskType === '短期任务').length,
+          longStepCount: completed.filter((record) => record.taskType === '长期任务').length,
+          completedTaskCount: tasks.filter((task) => progress(task).percent === 100 && progressed.has(task.id)).length,
+          mostProgressed,
+          noProgressTasks,
+          longProgress,
+          suggestion: noProgressTasks.length ? `${nextLabel}优先补齐未推进任务：${noProgressTasks.slice(0, 3).join('、')}。` : mostProgressed.length ? `${nextLabel}可以延续当前节奏，继续推进${mostProgressed[0].replace(/（.*$/, '')}。` : `${nextLabel}先选择一个真实任务持续推进。`
+        };
+      }
+      function summaryCard(title, summary, mode) {
+        if (!summary) return `<div class="summary-card"><h4>${title}</h4><div class="empty-state">暂无完成记录，勾选任务步骤后会自动生成可视化。</div></div>`;
+        return `<div class="summary-card"><h4>${title}</h4><p>${mode === 'week' ? '本周今日任务完成天数' : '本月今日任务完成天数'}：${summary.todayTaskCompletedDays}</p><p>${mode === 'week' ? '本周短期任务完成步骤' : '本月短期任务完成步骤'}：${summary.shortStepCount}</p><p>${mode === 'week' ? '本周长期任务完成步骤' : '本月长期任务完成步骤'}：${summary.longStepCount}</p>${mode === 'month' ? `<p>本月完成任务总数：${summary.completedTaskCount}</p>` : ''}<p>推进最多：${summary.mostProgressed.join('、') || '暂无'}</p><p>没有推进：${summary.noProgressTasks.join('、') || '暂无'}</p><p>长期任务推进：${summary.longProgress.join('；') || '暂无'}</p><p>${mode === 'week' ? '下周建议' : '下月建议'}：${summary.suggestion}</p></div>`;
+      }
+      function shareStats() {
+        const todayTasks = tasks.filter((task) => task.type === 'today');
+        const todayTaskDone = todayTasks.filter((task) => progress(task).percent === 100 && task.steps.length > 0).length;
+        const allSteps = tasks.flatMap((task) => task.steps);
+        const stepDone = allSteps.filter((step) => step.done).length;
+        const today = dateStats(todayISO());
+        const rate = allSteps.length ? Math.round(stepDone / allSteps.length * 100) : 0;
+        const hasTodayRecord = stepRecords.some((record) => record.date === todayISO() && record.completed);
+        return {
+          date: todayISO(),
+          todayTaskDone,
+          todayTaskTotal: todayTasks.length,
+          allTodayTasksCompleted: todayTasks.length > 0 && todayTaskDone === todayTasks.length,
+          stepDone,
+          stepTotal: allSteps.length,
+          shortDone: today.shortDone,
+          longDone: today.longDone,
+          completionRate: rate,
+          hasShareData: (todayTasks.length > 0 || hasTodayRecord) && allSteps.length > 0,
+          encouragement: encouragement(rate, stepDone)
+        };
+      }
+      function encouragement(rate, completedSteps) {
+        if (!completedSteps) return '先迈出第一步，监督卡会记录你的真实推进。';
+        if (rate >= 100) return '今天完成得很稳，给自己一个漂亮收尾。';
+        if (rate >= 70) return '今天推进不错，明天继续保持节奏。';
+        if (rate >= 30) return '今天有推进，明天继续。';
+        return '有一点推进也算数，明天把颗粒度再切小一点。';
+      }
+      function shareLines(stats) {
+        return [
+          `今日任务：${stats.allTodayTasksCompleted ? '已全部完成' : '未全部完成'} ${stats.todayTaskDone}/${stats.todayTaskTotal}`,
+          `今日步骤：完成 ${stats.stepDone}/${stats.stepTotal}`,
+          `短期推进：${stats.shortDone}步`,
+          `长期推进：${stats.longDone}步`,
+          `今日完成率：${stats.completionRate}%`
+        ];
+      }
+      function formatShareDate(dateText) {
+        return dateText.replaceAll('-', '/');
+      }
+      function shareText(stats) {
+        return ['今日计划打卡', formatShareDate(stats.date), '', ...shareLines(stats), '', stats.encouragement].join('\n');
+      }
+      function shareCard() {
+        const stats = shareStats();
+        if (!stats.hasShareData) return `<div class="share-card-wrap"><h4>今日监督分享卡</h4><div class="empty-state">今天还没有可分享的完成记录。先完成几个步骤，再生成监督卡吧。</div></div>`;
+        return `<div class="share-card-wrap"><h4>今日监督分享卡</h4><div class="share-card"><p class="share-title">今日计划打卡</p><h3>${formatShareDate(stats.date)}</h3>${shareLines(stats).map((line) => `<p>${line}</p>`).join('')}<b>${stats.encouragement}</b></div><p class="muted">隐私保护：分享卡不会展示任务名称、说明、具体步骤或截止日期。</p><div class="summary-actions"><button id="copyShareBtn" class="secondary-action">复制分享文字</button><button id="imageShareBtn" class="secondary-action">生成分享图片</button></div><p id="copyShareMsg" class="success-text"></p><div id="shareImageSlot"></div></div>`;
+      }
+      function bindShareButtons() {
+        $('copyShareBtn')?.addEventListener('click', async () => {
+          const text = shareText(shareStats());
+          try {
+            if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+            else fallbackCopy(text);
+          } catch {
+            fallbackCopy(text);
+          }
+          $('copyShareMsg').textContent = '分享文字已复制。';
+        });
+        $('imageShareBtn')?.addEventListener('click', () => {
+          const stats = shareStats();
+          const canvas = document.createElement('canvas');
+          canvas.width = 900;
+          canvas.height = 640;
+          const ctx = canvas.getContext('2d');
+          const gradient = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
+          gradient.addColorStop(0, '#07111f');
+          gradient.addColorStop(1, '#113250');
+          ctx.fillStyle = gradient;
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.strokeStyle = 'rgba(56, 222, 254, 0.45)';
+          ctx.lineWidth = 3;
+          drawRoundRect(ctx, 42, 42, 816, 556, 34);
+          ctx.stroke();
+          ctx.fillStyle = '#38defe';
+          ctx.font = '700 34px Microsoft YaHei, sans-serif';
+          ctx.fillText('今日计划打卡', 86, 116);
+          ctx.fillStyle = '#eef7ff';
+          ctx.font = '700 48px Microsoft YaHei, sans-serif';
+          ctx.fillText(formatShareDate(stats.date), 86, 178);
+          ctx.font = '28px Microsoft YaHei, sans-serif';
+          shareLines(stats).forEach((line, index) => ctx.fillText(line, 86, 250 + index * 56));
+          ctx.fillStyle = '#60f2a5';
+          ctx.font = '700 30px Microsoft YaHei, sans-serif';
+          ctx.fillText(stats.encouragement, 86, 560);
+          $('shareImageSlot').innerHTML = `<img class="share-preview" src="${canvas.toDataURL('image/png')}" alt="今日监督分享卡" />`;
+        });
+      }
+      function drawRoundRect(ctx, x, y, width, height, radius) {
+        ctx.beginPath();
+        ctx.moveTo(x + radius, y);
+        ctx.arcTo(x + width, y, x + width, y + height, radius);
+        ctx.arcTo(x + width, y + height, x, y + height, radius);
+        ctx.arcTo(x, y + height, x, y, radius);
+        ctx.arcTo(x, y, x + width, y, radius);
+        ctx.closePath();
+      }
+      function fallbackCopy(text) {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-9999px';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
+      async function aiDecompose(task) {
+        $('notice').innerHTML = '';
+        const res = await fetch('/api/decompose', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ task, demoConfig })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'AI拆解失败');
+        task.steps = makeSteps(data.steps.map(fixMojibake), 'AI拆解建议，可手动修改');
+      }
+      $('configForm').addEventListener('submit', (event) => {
+        event.preventDefault();
+        demoConfig = { provider: $('provider').value, apiKey: $('apiKey').value, baseUrl: $('baseUrl').value, model: $('model').value };
+        $('configMsg').className = demoConfig.apiKey ? 'success-text' : 'warning-text';
+        $('configMsg').textContent = demoConfig.apiKey ? '演示配置已暂存于当前页面内存。关闭或刷新页面后会消失。' : '未配置AI服务。';
+      });
+      $('provider').addEventListener('change', () => {
+        if ($('provider').value === 'DeepSeek') { $('baseUrl').value = 'https://api.deepseek.com'; $('model').value = 'deepseek-v4-flash'; }
+        if ($('provider').value === 'OpenAI') { $('baseUrl').value = 'https://api.openai.com/v1'; $('model').value = 'gpt-4.1-mini'; }
+      });
+      $('taskForm').addEventListener('submit', (event) => {
+        event.preventDefault();
+        const name = $('name').value.trim();
+        const deadline = $('deadline').value;
+        if (!name || !deadline) return;
+        const task = normalizeTask({ id: `${Date.now()}`, name, description: $('description').value.trim(), type: $('type').value, deadline, steps: [] });
+        tasks.push(task);
+        selectedTaskId = task.id;
+        event.target.reset();
+        $('deadline').value = todayISO();
+        render();
+      });
+      document.addEventListener('click', async (event) => {
+        const selectId = event.target.closest('[data-select]')?.dataset.select;
+        if (selectId && !event.target.matches('button,input')) { selectedTaskId = selectId; render(); }
+        const aiId = event.target.dataset.ai;
+        if (aiId) {
+          const task = tasks.find((item) => item.id === aiId);
+          try { await aiDecompose(task); } catch (error) { $('notice').innerHTML = `<div class="notice">${error.message}。可点击“本地示例拆解”，但本地示例不是AI结果。</div>`; }
+          render();
+        }
+        const localId = event.target.dataset.local;
+        if (localId) { const task = tasks.find((item) => item.id === localId); task.steps = localSteps(task); $('notice').innerHTML = '<div class="notice">已生成本地示例拆解：本地示例，不是AI结果。</div>'; render(); }
+        const deleteId = event.target.dataset.delete;
+        if (deleteId) { tasks = tasks.filter((task) => task.id !== deleteId); selectedTaskId = tasks[0]?.id || ''; render(); }
+        const addStepId = event.target.dataset.addstep;
+        if (addStepId) { tasks.find((task) => task.id === addStepId).steps.push(...makeSteps(['新增步骤'], '用户手动新增')); render(); }
+        const delStep = event.target.dataset.delstep;
+        if (delStep) { const [taskId, stepId] = delStep.split(':'); const task = tasks.find((item) => item.id === taskId); task.steps = task.steps.filter((step) => step.id !== stepId); render(); }
+        const up = event.target.dataset.up;
+        const down = event.target.dataset.down;
+        if (up || down) {
+          const [taskId, stepId] = (up || down).split(':');
+          const task = tasks.find((item) => item.id === taskId);
+          const index = task.steps.findIndex((step) => step.id === stepId);
+          const target = index + (up ? -1 : 1);
+          [task.steps[index], task.steps[target]] = [task.steps[target], task.steps[index]];
+          render();
+        }
+      });
+      document.addEventListener('input', (event) => {
+        const title = event.target.dataset.title;
+        if (title) { const [taskId, stepId] = title.split(':'); tasks.find((task) => task.id === taskId).steps.find((step) => step.id === stepId).title = event.target.value; save(); }
+      });
+      document.addEventListener('change', (event) => {
+        const done = event.target.dataset.done;
+        if (done) {
+          const [taskId, stepId] = done.split(':');
+          const task = tasks.find((item) => item.id === taskId);
+          const step = task.steps.find((item) => item.id === stepId);
+          if (step.done !== event.target.checked) addStepRecord(task, step, event.target.checked);
+          step.done = event.target.checked;
+          render();
+        }
+      });
+      $('askBtn').addEventListener('click', async () => {
+        const task = tasks.find((item) => item.id === selectedTaskId) || tasks[0];
+        const question = $('question').value.trim();
+        if (!task || !question) return;
+        const userMessage = { role: 'user', content: question, time: new Date().toISOString(), taskId: task.id };
+        chatMessages[task.id] = [...(chatMessages[task.id] || []), userMessage];
+        $('question').value = '';
+        render();
+        const pending = { role: 'assistant', content: '正在请求AI...', time: new Date().toISOString(), taskId: task.id };
+        chatMessages[task.id] = [...chatMessages[task.id], pending];
+        render();
+        const messages = chatMessages[task.id]
+          .filter((message) => message !== pending)
+          .map(({ role, content }) => ({ role, content }));
+        const res = await fetch('/api/ask', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ question, task, messages, demoConfig }) });
+        const data = await res.json();
+        chatMessages[task.id] = chatMessages[task.id].filter((message) => message !== pending);
+        chatMessages[task.id].push({ role: 'assistant', content: res.ok ? fixMojibake(data.answer) : `${fixMojibake(data.error || 'AI回答失败')}。请先填写演示API配置。`, time: new Date().toISOString(), taskId: task.id });
+        render();
+      });
+      $('clearChatBtn').addEventListener('click', () => {
+        const task = tasks.find((item) => item.id === selectedTaskId) || tasks[0];
+        if (!task) return;
+        chatMessages[task.id] = [];
+        render();
+      });
+      $('copyLastBtn').addEventListener('click', async () => {
+        const task = tasks.find((item) => item.id === selectedTaskId) || tasks[0];
+        const last = [...(chatMessages[task?.id] || [])].reverse().find((message) => message.role === 'assistant');
+        if (last) await navigator.clipboard.writeText(last.content);
+      });
+      render();
+    </script>
+  </body>
+</html>

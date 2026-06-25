@@ -17,7 +17,7 @@
 * { box-sizing: border-box; }
 body {
   margin: 0;
-  min-width: 320px;
+  min-width: 1024px;
   background:
     radial-gradient(circle at 15% 0%, rgba(56, 222, 254, 0.14), transparent 30%),
     radial-gradient(circle at 85% 8%, rgba(91, 140, 255, 0.16), transparent 34%),
@@ -38,7 +38,7 @@ input, select {
 }
 label { display: grid; gap: 8px; color: var(--muted); font-size: 14px; }
 
-.app-shell { width: min(1500px, calc(100% - 32px)); margin: 0 auto; padding: 28px 0 56px; }
+.app-shell { width: min(1760px, calc(100% - 32px)); margin: 0 auto; padding: 18px 0 36px; }
 .hero {
   display: grid;
   grid-template-columns: 1fr 220px;
@@ -388,4 +388,168 @@ label { display: grid; gap: 8px; color: var(--muted); font-size: 14px; }
   .hero, .panel { padding: 18px; border-radius: 20px; }
   .form-grid, .step-row, .ask-box, .trend-row { grid-template-columns: 1fr; }
   .hero-orbit { width: 140px; height: 140px; }
+}
+
+/* Desktop workbench layout */
+.desktop-workbench {
+  display: grid;
+  grid-template-columns: minmax(300px, 30%) minmax(520px, 50%) minmax(220px, 20%);
+  gap: 18px;
+  align-items: start;
+}
+.left-chat, .right-nav {
+  position: sticky;
+  top: 18px;
+  min-height: calc(100vh - 36px);
+}
+.center-board {
+  display: grid;
+  gap: 18px;
+}
+.connection-row, .board-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.connection-row {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.05);
+}
+.status-online { color: var(--green); }
+.status-offline { color: var(--red); }
+.workbench-chat {
+  min-height: 52vh;
+  max-height: 58vh;
+}
+.today-board {
+  display: grid;
+  gap: 16px;
+}
+.board-header h2 {
+  margin: 4px 0 0;
+  font-size: clamp(28px, 3vw, 46px);
+}
+.board-score {
+  display: grid;
+  place-items: center;
+  min-width: 128px;
+  min-height: 128px;
+  border: 1px solid rgba(56, 222, 254, 0.34);
+  border-radius: 28px;
+  background: rgba(56, 222, 254, 0.1);
+}
+.board-score strong {
+  color: var(--cyan);
+  font-size: 40px;
+  line-height: 1;
+}
+.board-score span {
+  color: var(--muted);
+  font-size: 13px;
+}
+.board-block {
+  padding: 16px;
+  border: 1px solid rgba(155, 176, 201, 0.14);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.035);
+}
+.today-task-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+.today-item {
+  padding: 14px;
+  border-radius: 16px;
+  background: rgba(2, 10, 22, 0.38);
+}
+.today-step {
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--text);
+}
+.today-step input { width: auto; }
+.timeline-lite {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-top: 12px;
+}
+.timeline-lite span {
+  padding: 12px;
+  border: 1px solid rgba(56, 222, 254, 0.18);
+  border-radius: 16px;
+  color: #d7efff;
+  background: rgba(56, 222, 254, 0.06);
+}
+.pet-status, .motivation, .risk-banner {
+  padding: 16px;
+  border-radius: 18px;
+  background: rgba(96, 242, 165, 0.08);
+  color: #dfffee;
+}
+.risk-banner {
+  border: 1px solid rgba(255, 189, 102, 0.35);
+  background: rgba(255, 189, 102, 0.12);
+  color: var(--orange);
+}
+.right-nav h1 {
+  margin: 0 0 6px;
+  font-size: 26px;
+}
+.nav-menu {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+}
+.nav-menu button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 13px 14px;
+  border: 1px solid rgba(155, 176, 201, 0.18);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--text);
+  text-align: left;
+}
+.nav-menu button.active {
+  border-color: rgba(56, 222, 254, 0.55);
+  background: rgba(56, 222, 254, 0.14);
+  color: var(--cyan);
+}
+.center-board .task-pool-panel,
+.center-board .visual-panel,
+.center-board .summary-panel,
+.center-board .ask-panel {
+  grid-column: auto;
+}
+.center-board .task-columns {
+  grid-template-columns: 1fr;
+}
+.center-board .add-form,
+.center-board .config-form {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.center-board .add-form button,
+.center-board .config-form button {
+  grid-column: span 2;
+}
+
+@media (max-width: 1200px) {
+  .desktop-workbench {
+    grid-template-columns: 30% 48% 22%;
+    gap: 12px;
+  }
+  .panel { padding: 16px; }
+  .timeline-lite, .summary-grid, .visual-grid {
+    grid-template-columns: 1fr;
+  }
 }

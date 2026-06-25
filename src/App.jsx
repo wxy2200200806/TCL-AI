@@ -48,11 +48,14 @@ export default function App() {
   const [selectedTaskId, setSelectedTaskId] = useState('');
   const [question, setQuestion] = useState('');
   const [chatMessages, setChatMessages] = useState(() => loadJson(STORAGE_KEYS.chatMessages, {}));
+  const [riskRecords, setRiskRecords] = useState(() => loadJson(STORAGE_KEYS.riskRecords, []));
   const [weeklySummary, setWeeklySummary] = useState(null);
   const [monthlySummary, setMonthlySummary] = useState(null);
+  const [activeNav, setActiveNav] = useState('tasks');
 
   const selectedTask = tasks.find((task) => task.id === selectedTaskId) || tasks[0];
-  const selectedTaskMessages = selectedTask ? chatMessages[selectedTask.id] || [] : [];
+  const chatScopeId = 'global';
+  const selectedTaskMessages = chatMessages[chatScopeId] || [];
   const chatEndRef = useRef(null);
   const completionAnalytics = useMemo(() => buildCompletionAnalytics(tasks, stepRecords), [tasks, stepRecords]);
   const shareStats = useMemo(() => buildShareStats(tasks, stepRecords), [tasks, stepRecords]);
@@ -61,10 +64,20 @@ export default function App() {
   useEffect(() => saveJson(STORAGE_KEYS.activityLog, logs), [logs]);
   useEffect(() => saveJson(STORAGE_KEYS.stepRecords, stepRecords), [stepRecords]);
   useEffect(() => saveJson(STORAGE_KEYS.chatMessages, chatMessages), [chatMessages]);
+  useEffect(() => saveJson(STORAGE_KEYS.riskRecords, riskRecords), [riskRecords]);
   useEffect(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), [selectedTaskId, selectedTaskMessages.length]);
 
   function addLog(type, payload) {
     setLogs((current) => [...current, logEvent(type, payload)]);
+  }
+
+  function addRiskRecord(reason) {
+    setRiskRecords((current) => [...current, {
+      id: `risk-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      reason,
+      date: todayISO(),
+      createdAt: new Date().toISOString()
+    }]);
   }
 
   function addStepRecord(task, step, completed) {
@@ -107,6 +120,24 @@ export default function App() {
     setSelectedTaskId(task.id);
     addLog('task-added', { taskId: task.id, taskName: task.name });
     setTaskForm(emptyTaskForm);
+  }
+
+  async function createTaskFromChat(text) {
+    const name = text.replace(/^(帮我)?创建任务/, '').trim() || text.trim();
+    const task = createTask({ name, description: '通过对话窗口创建', type: 'today', deadlineDate: todayISO() });
+    setTasks((current) => [...current, task]);
+    setSelectedTaskId(task.id);
+    addLog('task-added', { taskId: task.id, taskName: task.name });
+    if (aiConfig.hasApiKey) {
+      try {
+        const steps = await decomposeTaskWithAI(task, aiConfig);
+        applySteps(task.id, stepsFromTitles(steps, 'AI拆解建议，可手动修改'));
+        return `我已根据你的指令创建任务，并尝试完成AI拆解。请在右侧“任务&标签管理”中检查、修改和确认。`;
+      } catch {
+        return `我已先创建任务，但AI拆解暂时失败。你可以在右侧使用“本地示例拆解”或补充AI配置后再拆解。`;
+      }
+    }
+    return `我已创建任务草稿。当前是手动模式，请在右侧“任务&标签管理”中补充或拆解。`;
   }
 
   async function decomposeWithAI(task) {
@@ -183,28 +214,50 @@ export default function App() {
 
   async function sendQuestion() {
     if (!question.trim()) return;
-    if (!selectedTask) {
-      alert('请先选择或添加一个任务，再向Agent提问。');
+    const text = question.trim();
+    const scopeId = selectedTask?.id || 'global';
+    const userMessage = { role: 'user', content: text, time: new Date().toISOString(), taskId: scopeId };
+    const nextMessages = [...selectedTaskMessages, userMessage];
+    setChatMessages((current) => ({ ...current, [scopeId]: nextMessages }));
+    setQuestion('');
+
+    if (/创建任务/.test(text)) {
+      const content = await createTaskFromChat(text);
+      const assistantMessage = { role: 'assistant', content, time: new Date().toISOString(), taskId: scopeId };
+      setChatMessages((current) => ({ ...current, [scopeId]: [...(current[scopeId] || nextMessages), assistantMessage] }));
       return;
     }
-    const userMessage = { role: 'user', content: question.trim(), time: new Date().toISOString(), taskId: selectedTask.id };
-    const nextMessages = [...selectedTaskMessages, userMessage];
-    setChatMessages((current) => ({ ...current, [selectedTask.id]: nextMessages }));
-    setQuestion('');
+
+    if (/阻碍|卡住|困难|风险|延期|来不及/.test(text)) {
+      addRiskRecord(text);
+    }
+
+    if (/明早|明天早上|开会/.test(text) && !/\d|点|:/.test(text)) {
+      const assistantMessage = { role: 'assistant', content: '我可以帮你调整安排。会议大概几点开始？先告诉我一个时间就好。', time: new Date().toISOString(), taskId: scopeId };
+      setChatMessages((current) => ({ ...current, [scopeId]: [...(current[scopeId] || nextMessages), assistantMessage] }));
+      return;
+    }
+
+    if (!selectedTask || !aiConfig.hasApiKey) {
+      const content = aiConfig.hasApiKey ? '请先创建或选择一个任务，我再结合任务上下文回答。' : '当前为手动模式：你可以创建任务、勾选进度、生成总结；需要AI问答时，请先在系统设置里填写并保存API配置。';
+      const assistantMessage = { role: 'assistant', content, time: new Date().toISOString(), taskId: scopeId };
+      setChatMessages((current) => ({ ...current, [scopeId]: [...(current[scopeId] || nextMessages), assistantMessage] }));
+      return;
+    }
+
     try {
       const apiMessages = nextMessages.map(({ role, content }) => ({ role, content }));
       const content = await askAgent(question, selectedTask, apiMessages, aiConfig);
-      const assistantMessage = { role: 'assistant', content, time: new Date().toISOString(), taskId: selectedTask.id };
-      setChatMessages((current) => ({ ...current, [selectedTask.id]: [...(current[selectedTask.id] || nextMessages), assistantMessage] }));
+      const assistantMessage = { role: 'assistant', content, time: new Date().toISOString(), taskId: scopeId };
+      setChatMessages((current) => ({ ...current, [scopeId]: [...(current[scopeId] || nextMessages), assistantMessage] }));
     } catch (error) {
-      const assistantMessage = { role: 'assistant', content: `${error.message}。请先在AI配置中填写并保存可用服务。`, time: new Date().toISOString(), taskId: selectedTask.id };
-      setChatMessages((current) => ({ ...current, [selectedTask.id]: [...(current[selectedTask.id] || nextMessages), assistantMessage] }));
+      const assistantMessage = { role: 'assistant', content: `${error.message}。请先在AI配置中填写并保存可用服务。`, time: new Date().toISOString(), taskId: scopeId };
+      setChatMessages((current) => ({ ...current, [scopeId]: [...(current[scopeId] || nextMessages), assistantMessage] }));
     }
   }
 
   function clearCurrentChat() {
-    if (!selectedTask) return;
-    setChatMessages((current) => ({ ...current, [selectedTask.id]: [] }));
+    setChatMessages((current) => ({ ...current, [chatScopeId]: [] }));
   }
 
   async function copyLastAssistant() {
@@ -216,96 +269,97 @@ export default function App() {
     setTasks([]);
     setLogs([]);
     setStepRecords([]);
+    setRiskRecords([]);
     setWeeklySummary(null);
     setMonthlySummary(null);
     setSelectedTaskId('');
     localStorage.removeItem(STORAGE_KEYS.tasks);
     localStorage.removeItem(STORAGE_KEYS.activityLog);
     localStorage.removeItem(STORAGE_KEYS.stepRecords);
+    localStorage.removeItem(STORAGE_KEYS.riskRecords);
     localStorage.removeItem(STORAGE_KEYS.summaries);
   }
 
-  const onlySetup = tasks.length === 0;
+  const todayTasks = tasks.filter((task) => task.type === 'today');
+  const apiConnected = Boolean(aiConfig.hasApiKey);
+  const latestRisk = riskRecords[riskRecords.length - 1];
 
   return (
     <div className="app-shell">
-      <section className="hero">
-        <p className="eyebrow">Personal Task Planning Agent</p>
-        <h1>TCL计划Agent</h1>
-        <h2>输入真实任务，Agent帮你拆解、追踪和总结。</h2>
-      </section>
-
-      <main className={onlySetup ? 'setup-grid' : 'workspace-grid'}>
-        <AIConfigPanel config={aiConfig} message={configMessage} onChange={setAiConfig} onProviderChange={handleProviderChange} onSubmit={handleSaveConfig} />
-        <AddTaskPanel form={taskForm} onChange={setTaskForm} onSubmit={addTask} />
-
-        {!onlySetup && (
-          <>
-            <section className="panel task-pool-panel">
-              <SectionTitle index="03" title="任务列表" />
-              {aiNotice && <div className="notice">{aiNotice}</div>}
-              <div className="task-columns">
-                {TASK_TYPES.map((type) => (
-                  <div key={type.value}>
-                    <h3>{type.column}</h3>
-                    <p className="muted">{type.hint}</p>
-                    <TaskList
-                      tasks={tasks.filter((task) => task.type === type.value)}
-                      selectedTaskId={selectedTaskId}
-                      onSelect={setSelectedTaskId}
-                      onAI={decomposeWithAI}
-                      onLocal={decomposeLocally}
-                      onDelete={deleteTask}
-                      onUpdateTask={updateTask}
-                      onUpdateStep={updateStep}
-                      onAddStep={addStep}
-                      onDeleteStep={deleteStep}
-                      onMoveStep={moveStep}
-                    />
-                  </div>
-                ))}
+      <main className="desktop-workbench">
+        <aside className="left-chat panel">
+          <div className="connection-row">
+            <span>🌐需联网</span>
+            <b className={apiConnected ? 'status-online' : 'status-offline'}>{apiConnected ? '已连接' : '手动模式'}</b>
+          </div>
+          <h2>智能对话窗口</h2>
+          <p className="muted">{apiConnected ? '你可以直接说：创建任务xxx、反馈进度、生成总结。涉及修改时我会先说明改动。' : '当前未配置API。你仍可手动创建任务、勾选进度和查看看板。'}</p>
+          <div className="chat-window workbench-chat">
+            {selectedTaskMessages.length === 0 ? <div className="empty-state">可以从这里开始：例如“创建任务 写MES字段说明报告”。</div> : selectedTaskMessages.map((message) => (
+              <div className={`chat-message ${message.role}`} key={`${message.taskId}-${message.time}-${message.content.slice(0, 12)}`}>
+                <div className="chat-bubble">
+                  <small>{message.role === 'user' ? '你' : 'Agent'} · {new Date(message.time).toLocaleTimeString()}</small>
+                  <p>{message.content}</p>
+                </div>
               </div>
-            </section>
+            ))}
+            <div ref={chatEndRef} />
+          </div>
+          <div className="ask-box">
+            <input value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="输入自然语言指令..." />
+            <button className="primary-action compact" onClick={sendQuestion}>发送</button>
+          </div>
+          <div className="summary-actions">
+            <button className="secondary-action" onClick={clearCurrentChat}>清空对话</button>
+            <button className="secondary-action" onClick={copyLastAssistant}>复制回复</button>
+          </div>
+        </aside>
 
-            <section className="panel ask-panel">
-              <SectionTitle index="04" title="问问Agent" />
-              <p className="muted">AI回答会结合当前选中的任务：{selectedTask ? selectedTask.name : '未选择任务'}</p>
-              <div className="chat-window">
-                {selectedTaskMessages.length === 0 ? <div className="empty-state">当前任务还没有对话。你可以连续追问，历史上下文会一起发送给AI。</div> : selectedTaskMessages.map((message) => (
-                  <div className={`chat-message ${message.role}`} key={`${message.taskId}-${message.time}-${message.content.slice(0, 12)}`}>
-                    <div className="chat-bubble">
-                      <small>{message.role === 'user' ? '你' : 'Agent'} · {new Date(message.time).toLocaleTimeString()}</small>
-                      <p>{message.content}</p>
-                    </div>
-                  </div>
-                ))}
-                <div ref={chatEndRef} />
-              </div>
-              <div className="ask-box">
-                <input value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="例如：这个报告第一步怎么做？" />
-                <button className="primary-action compact" onClick={sendQuestion}>发送</button>
-              </div>
-              <div className="summary-actions">
-                <button className="secondary-action" onClick={clearCurrentChat}>清空当前任务对话</button>
-                <button className="secondary-action" onClick={copyLastAssistant}>复制最后一条AI回答</button>
-              </div>
-            </section>
+        <section className="center-board">
+          <TodayBoard
+            todayTasks={todayTasks}
+            risks={riskRecords}
+            latestRisk={latestRisk}
+            analytics={completionAnalytics}
+            onUpdateStep={updateStep}
+          />
+          <ActiveWorkspace
+            activeNav={activeNav}
+            tasks={tasks}
+            taskForm={taskForm}
+            config={aiConfig}
+            configMessage={configMessage}
+            aiNotice={aiNotice}
+            selectedTaskId={selectedTaskId}
+            analytics={completionAnalytics}
+            shareStats={shareStats}
+            weeklySummary={weeklySummary}
+            monthlySummary={monthlySummary}
+            onTaskFormChange={setTaskForm}
+            onAddTask={addTask}
+            onConfigChange={setAiConfig}
+            onProviderChange={handleProviderChange}
+            onSaveConfig={handleSaveConfig}
+            onSelectTask={setSelectedTaskId}
+            onAI={decomposeWithAI}
+            onLocal={decomposeLocally}
+            onDelete={deleteTask}
+            onUpdateTask={updateTask}
+            onUpdateStep={updateStep}
+            onAddStep={addStep}
+            onDeleteStep={deleteStep}
+            onMoveStep={moveStep}
+            onWeekly={() => setWeeklySummary(buildWeeklyRecordSummary(tasks, stepRecords))}
+            onMonthly={() => setMonthlySummary(buildMonthlyRecordSummary(tasks, stepRecords))}
+            onClear={clearLocalData}
+          />
+        </section>
 
-            <section className="panel visual-panel">
-              <SectionTitle index="05" title="可视化与总结" />
-              <VisualSummary
-                tasks={tasks}
-                analytics={completionAnalytics}
-                shareStats={shareStats}
-                weeklySummary={weeklySummary}
-                monthlySummary={monthlySummary}
-                onWeekly={() => setWeeklySummary(buildWeeklyRecordSummary(tasks, stepRecords))}
-                onMonthly={() => setMonthlySummary(buildMonthlyRecordSummary(tasks, stepRecords))}
-                onClear={clearLocalData}
-              />
-            </section>
-          </>
-        )}
+        <aside className="right-nav panel">
+          <h1>TCL计划Agent</h1>
+          <p className="muted">桌面工作台</p>
+          <NavMenu active={activeNav} onChange={setActiveNav} />
+        </aside>
       </main>
     </div>
   );
@@ -313,6 +367,136 @@ export default function App() {
 
 function SectionTitle({ index, title }) {
   return <div className="section-title"><span>{index}</span><h3>{title}</h3></div>;
+}
+
+function NavMenu({ active, onChange }) {
+  const items = [
+    ['schedule', '🕘', '作息'],
+    ['tasks', '🏷️', '任务&标签管理'],
+    ['stats', '📊', '统计'],
+    ['pet', '🐾', '宠物'],
+    ['knowledge', '🏭', '制造知识角'],
+    ['settings', '⚙️', '系统设置']
+  ];
+  return <nav className="nav-menu">{items.map(([key, icon, label]) => <button key={key} className={active === key ? 'active' : ''} onClick={() => onChange(key)}><span>{icon}</span>{label}</button>)}</nav>;
+}
+
+function TodayBoard({ todayTasks, latestRisk, analytics, onUpdateStep }) {
+  const date = new Date();
+  const weekday = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'][date.getDay()];
+  const dateText = `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')} ${weekday}`;
+  const done = analytics.today.todayDone;
+  const total = analytics.today.todayTotal;
+  const petText = total === 0 ? '小鹰仔在等你的第一项今日任务。' : done === total ? '小鹰仔：今天节奏很稳，已经收好羽毛啦。' : `小鹰仔：已推进 ${done}/${total}，再切一个小步骤就很好。`;
+
+  return (
+    <section className="today-board panel">
+      <div className="board-header">
+        <div>
+          <p className="eyebrow">Today Command Center</p>
+          <h2>{dateText}</h2>
+        </div>
+        <div className="board-score"><strong>{total ? Math.round((done / total) * 100) : 0}%</strong><span>今日完成率</span></div>
+      </div>
+
+      <div className="board-block">
+        <h3>今日待办</h3>
+        {todayTasks.length === 0 ? <div className="empty-state">你还没有今日任务，可以在右侧创建或和我说“创建任务xxx”。</div> : <div className="today-task-list">{todayTasks.map((task) => <TodayTaskItem key={task.id} task={task} onUpdateStep={onUpdateStep} />)}</div>}
+      </div>
+
+      <div className="board-block">
+        <h3>作息时间轴</h3>
+        <div className="timeline-lite"><span>09:00 开始工作</span><span>12:00 午间调整</span><span>18:00 收尾复盘</span></div>
+      </div>
+
+      <div className="pet-status">{petText}</div>
+      {latestRisk && <div className="risk-banner">风险提醒：{latestRisk.reason}</div>}
+      <div className="motivation">今日激励语：把任务切小一点，完成感会自己长出来。</div>
+    </section>
+  );
+}
+
+function TodayTaskItem({ task, onUpdateStep }) {
+  const progress = getProgress(task);
+  return (
+    <article className="today-item">
+      <div className="task-card-head"><h4>{task.name}</h4><span>{progress.done}/{progress.total}</span></div>
+      {task.steps.length === 0 ? <p className="muted">还没有步骤，可以在右侧任务管理中拆解。</p> : task.steps.map((step) => (
+        <label className="today-step" key={step.id}>
+          <input type="checkbox" checked={step.done} onChange={(event) => onUpdateStep(task.id, step.id, { done: event.target.checked })} />
+          <span>{step.title}</span>
+        </label>
+      ))}
+    </article>
+  );
+}
+
+function ActiveWorkspace(props) {
+  const {
+    activeNav,
+    tasks,
+    taskForm,
+    config,
+    configMessage,
+    aiNotice,
+    selectedTaskId,
+    analytics,
+    shareStats,
+    weeklySummary,
+    monthlySummary,
+    onTaskFormChange,
+    onAddTask,
+    onConfigChange,
+    onProviderChange,
+    onSaveConfig,
+    onSelectTask,
+    onAI,
+    onLocal,
+    onDelete,
+    onUpdateTask,
+    onUpdateStep,
+    onAddStep,
+    onDeleteStep,
+    onMoveStep,
+    onWeekly,
+    onMonthly,
+    onClear
+  } = props;
+
+  if (activeNav === 'settings') return <AIConfigPanel config={config} message={configMessage} onChange={onConfigChange} onProviderChange={onProviderChange} onSubmit={onSaveConfig} />;
+  if (activeNav === 'stats') return <section className="panel"><SectionTitle index="03" title="统计" /><VisualSummary tasks={tasks} analytics={analytics} shareStats={shareStats} weeklySummary={weeklySummary} monthlySummary={monthlySummary} onWeekly={onWeekly} onMonthly={onMonthly} onClear={onClear} /></section>;
+  if (activeNav === 'schedule') return <section className="panel"><SectionTitle index="03" title="作息" /><div className="empty-state">作息模块已常驻在今日看板。后续可在这里扩展上下班、午休和专注时段设置。</div></section>;
+  if (activeNav === 'pet') return <section className="panel"><SectionTitle index="03" title="宠物" /><div className="pet-status">小鹰仔会根据真实完成步骤数变化，不编造进度。</div></section>;
+  if (activeNav === 'knowledge') return <section className="panel"><SectionTitle index="03" title="制造知识角" /><div className="empty-state">这里预留制造知识、SOP、FAQ 与内部资料入口。当前不展示假资料。</div></section>;
+
+  return (
+    <section className="panel task-pool-panel">
+      <SectionTitle index="03" title="任务&标签管理" />
+      <AddTaskPanel form={taskForm} onChange={onTaskFormChange} onSubmit={onAddTask} />
+      {aiNotice && <div className="notice">{aiNotice}</div>}
+      <div className="task-columns">
+        {TASK_TYPES.map((type) => (
+          <div key={type.value}>
+            <h3>{type.column}</h3>
+            <p className="muted">{type.hint}</p>
+            <TaskList
+              tasks={tasks.filter((task) => task.type === type.value)}
+              selectedTaskId={selectedTaskId}
+              onSelect={onSelectTask}
+              onAI={onAI}
+              onLocal={onLocal}
+              onDelete={onDelete}
+              onUpdateTask={onUpdateTask}
+              onUpdateStep={onUpdateStep}
+              onAddStep={onAddStep}
+              onDeleteStep={onDeleteStep}
+              onMoveStep={onMoveStep}
+            />
+          </div>
+        ))}
+      </div>
+    </section>
+  );
 }
 
 function AIConfigPanel({ config, message, onChange, onProviderChange, onSubmit }) {

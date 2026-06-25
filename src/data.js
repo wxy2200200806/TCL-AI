@@ -14,6 +14,7 @@ export const STORAGE_KEYS = {
   tasks: 'tcl-plan-agent:v2:tasks',
   activityLog: 'tcl-plan-agent:v2:activity-log',
   stepRecords: 'tcl-plan-agent:v2:step-records',
+  riskRecords: 'tcl-plan-agent:v2:risk-records',
   aiConfigMeta: 'tcl-plan-agent:v2:ai-config-meta',
   chatMessages: 'tcl-plan-agent:v2:chat-messages',
   summaries: 'tcl-plan-agent:v2:summaries'

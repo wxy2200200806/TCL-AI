@@ -573,8 +573,7 @@ function getSortedAgendaTasks(tasks) {
 
 function shouldShowOnDashboard(task, today) {
   if (task.status === '已完成') return task.completedDate === today;
-  const days = getDaysLeft(task.deadlineDate, today);
-  return task.type === 'today' || days <= 0;
+  return true;
 }
 
 function getSortRank(task) {

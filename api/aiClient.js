@@ -46,6 +46,9 @@ export async function callChatCompletions(configInput, messages, jsonMode = fals
 
   if (!response.ok) {
     const text = await response.text();
+    if (jsonMode && /response_format|json_object|unsupported|Invalid/i.test(text)) {
+      return callChatCompletions(configInput, messages, false);
+    }
     throw new Error(`AI服务调用失败：${response.status} ${text.slice(0, 240)}`);
   }
 
@@ -53,7 +56,15 @@ export async function callChatCompletions(configInput, messages, jsonMode = fals
 }
 
 export function parseJsonContent(content) {
-  const cleaned = String(content || '').replace(/^```json\s*/i, '').replace(/```$/i, '').trim();
+  const cleaned = String(content || '')
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/```$/i, '')
+    .trim();
+  if (!cleaned.startsWith('{')) {
+    const match = cleaned.match(/\{[\s\S]*\}/);
+    if (match) return JSON.parse(match[0]);
+  }
   return JSON.parse(cleaned);
 }
 

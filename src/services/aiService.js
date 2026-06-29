@@ -20,6 +20,17 @@ export async function askAgent(question, task, messages = [], config) {
   return data.answer;
 }
 
+export async function analyzeAgentMessage(question, messages = [], tasks = [], config) {
+  const response = await fetch('/api/ask', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ mode: 'intent', question, messages, tasks, config })
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || 'AI意图识别失败');
+  return data.result;
+}
+
 export async function fetchModelList(config) {
   const response = await fetch('/api/models', {
     method: 'POST',

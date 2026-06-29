@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { PROVIDERS, STORAGE_KEYS, TASK_TYPES } from './data.js';
-import { askAgent, decomposeTaskWithAI, fetchModelList, localExampleDecompose } from './services/aiService.js';
+import { analyzeAgentMessage, decomposeTaskWithAI, fetchModelList, localExampleDecompose } from './services/aiService.js';
 import {
   buildCompletionAnalytics,
   buildMonthlyRecordSummary,
@@ -131,6 +131,44 @@ export default function App() {
     if (parsed.missing) return parsed.missing;
     setPendingTaskDraft(parsed.task);
     return '我识别到一个任务草稿，请先在下方确认卡里检查和修改，确认后才会创建。';
+  }
+
+  function createTaskDraftFromAI(taskDraft = {}) {
+    const draft = {
+      name: taskDraft.title || taskDraft.name || '',
+      description: taskDraft.description || '',
+      type: ['today', 'short', 'long'].includes(taskDraft.type) ? taskDraft.type : 'today',
+      deadlineDate: taskDraft.deadline || taskDraft.deadlineDate || ''
+    };
+    if (draft.name && draft.deadlineDate) setPendingTaskDraft(draft);
+    return draft;
+  }
+
+  function buildLocalFallbackReply(text) {
+    const intent = detectChatIntent(text);
+    if (intent === 'create') {
+      const content = createTaskFromChat(text);
+      return `本地规则回复，不是 AI 结果。\n${content}`;
+    }
+    if (intent === 'ask') {
+      return '本地规则回复，不是 AI 结果。\n当前未连接 AI 服务，我无法可靠回答这个问题。请先在系统设置中配置 API Key。';
+    }
+    return '本地规则回复，不是 AI 结果。\n我无法确定你是想创建任务、查询任务还是普通咨询。请先在系统设置中配置 API Key，或明确说“创建任务：xxx，截止到xxxx”。';
+  }
+
+  function getAIReplyContent(result) {
+    if (result.intent === 'create_task') {
+      const draft = createTaskDraftFromAI(result.taskDraft);
+      if (!draft.name || !draft.deadlineDate) {
+        return result.reply || 'AI识别到你可能想创建任务，但任务名称或截止日期不完整，请补充后我再生成任务草稿。';
+      }
+      return result.reply || 'AI已生成任务草稿。请在下方任务确认卡中修改并确认，确认后才会创建。';
+    }
+    if (result.intent === 'ask') return result.answer || result.reply || 'AI没有返回有效回答。';
+    if (['modify_task', 'query_task', 'generate_summary', 'feedback_progress'].includes(result.intent)) {
+      return result.answer || result.reply || 'AI已识别你的意图，但还需要更多信息或确认后才能继续。';
+    }
+    return result.reply || result.answer || 'AI暂时无法判断你的意图，请换一种说法。';
   }
 
   function confirmPendingTask() {
@@ -281,32 +319,12 @@ export default function App() {
     setChatMessages((current) => ({ ...current, [scopeId]: nextMessages }));
     setQuestion('');
 
-    const intent = detectChatIntent(text);
-    if (intent === 'create') {
-      const content = createTaskFromChat(text);
-      const assistantMessage = { role: 'assistant', content, time: new Date().toISOString(), taskId: scopeId };
-      setChatMessages((current) => ({ ...current, [scopeId]: [...(current[scopeId] || nextMessages), assistantMessage] }));
-      return;
-    }
-
-    if (intent === 'uncertain') {
-      const assistantMessage = { role: 'assistant', content: '你是想创建任务，还是想咨询这个任务怎么做？', time: new Date().toISOString(), taskId: scopeId };
-      setChatMessages((current) => ({ ...current, [scopeId]: [...(current[scopeId] || nextMessages), assistantMessage] }));
-      return;
-    }
-
     if (/阻碍|卡住|困难|风险|延期|来不及/.test(text)) {
       addRiskRecord(text);
     }
 
-    if (/明早|明天早上|开会/.test(text) && !/\d|点|:/.test(text)) {
-      const assistantMessage = { role: 'assistant', content: '我可以帮你调整安排。会议大概几点开始？先告诉我一个时间就好。', time: new Date().toISOString(), taskId: scopeId };
-      setChatMessages((current) => ({ ...current, [scopeId]: [...(current[scopeId] || nextMessages), assistantMessage] }));
-      return;
-    }
-
     if (!aiConfig.hasApiKey) {
-      const content = '当前为手动模式：你可以创建任务、勾选进度、生成总结；需要AI问答时，请先在系统设置里填写并保存API配置。';
+      const content = `当前未连接 AI 服务，请先在系统设置中配置 API Key。\n${buildLocalFallbackReply(text)}`;
       const assistantMessage = { role: 'assistant', content, time: new Date().toISOString(), taskId: scopeId };
       setChatMessages((current) => ({ ...current, [scopeId]: [...(current[scopeId] || nextMessages), assistantMessage] }));
       return;
@@ -314,11 +332,13 @@ export default function App() {
 
     try {
       const apiMessages = nextMessages.map(({ role, content }) => ({ role, content }));
-      const content = await askAgent(text, selectedTask, apiMessages, aiConfig);
+      const result = await analyzeAgentMessage(text, apiMessages, tasks, aiConfig);
+      const content = getAIReplyContent(result);
       const assistantMessage = { role: 'assistant', content, time: new Date().toISOString(), taskId: scopeId };
       setChatMessages((current) => ({ ...current, [scopeId]: [...(current[scopeId] || nextMessages), assistantMessage] }));
     } catch (error) {
-      const assistantMessage = { role: 'assistant', content: `${error.message}。请先在AI配置中填写并保存可用服务。`, time: new Date().toISOString(), taskId: scopeId };
+      const content = `当前未连接 AI 服务，请先在系统设置中配置 API Key。\nAI调用失败：${error.message}\n${buildLocalFallbackReply(text)}`;
+      const assistantMessage = { role: 'assistant', content, time: new Date().toISOString(), taskId: scopeId };
       setChatMessages((current) => ({ ...current, [scopeId]: [...(current[scopeId] || nextMessages), assistantMessage] }));
     }
   }

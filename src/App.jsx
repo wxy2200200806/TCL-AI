@@ -7,6 +7,7 @@ import {
   buildShareStats,
   buildWeeklyRecordSummary,
   createTask,
+  getDaysLeft,
   getDaysText,
   getNextStep,
   getProgress,
@@ -280,7 +281,7 @@ export default function App() {
     localStorage.removeItem(STORAGE_KEYS.summaries);
   }
 
-  const todayTasks = tasks.filter((task) => task.type === 'today');
+  const agendaTasks = useMemo(() => getSortedAgendaTasks(tasks), [tasks]);
   const apiConnected = Boolean(aiConfig.hasApiKey);
   const latestRisk = riskRecords[riskRecords.length - 1];
 
@@ -317,11 +318,10 @@ export default function App() {
 
         <section className="center-board">
           <TodayBoard
-            todayTasks={todayTasks}
-            risks={riskRecords}
+            agendaTasks={agendaTasks}
             latestRisk={latestRisk}
-            analytics={completionAnalytics}
             onUpdateStep={updateStep}
+            onToggleTask={updateTask}
           />
           <ActiveWorkspace
             activeNav={activeNav}
@@ -371,23 +371,19 @@ function SectionTitle({ index, title }) {
 
 function NavMenu({ active, onChange }) {
   const items = [
-    ['schedule', '🕘', '作息'],
     ['tasks', '🏷️', '任务&标签管理'],
     ['stats', '📊', '统计'],
-    ['pet', '🐾', '宠物'],
     ['knowledge', '🏭', '制造知识角'],
     ['settings', '⚙️', '系统设置']
   ];
   return <nav className="nav-menu">{items.map(([key, icon, label]) => <button key={key} className={active === key ? 'active' : ''} onClick={() => onChange(key)}><span>{icon}</span>{label}</button>)}</nav>;
 }
 
-function TodayBoard({ todayTasks, latestRisk, analytics, onUpdateStep }) {
+function TodayBoard({ agendaTasks, latestRisk, onUpdateStep, onToggleTask }) {
   const date = new Date();
   const weekday = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'][date.getDay()];
   const dateText = `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')} ${weekday}`;
-  const done = analytics.today.todayDone;
-  const total = analytics.today.todayTotal;
-  const petText = total === 0 ? '小鹰仔在等你的第一项今日任务。' : done === total ? '小鹰仔：今天节奏很稳，已经收好羽毛啦。' : `小鹰仔：已推进 ${done}/${total}，再切一个小步骤就很好。`;
+  const { done, total } = getAgendaProgress(agendaTasks);
 
   return (
     <section className="today-board panel">
@@ -401,32 +397,63 @@ function TodayBoard({ todayTasks, latestRisk, analytics, onUpdateStep }) {
 
       <div className="board-block">
         <h3>今日待办</h3>
-        {todayTasks.length === 0 ? <div className="empty-state">你还没有今日任务，可以在右侧创建或和我说“创建任务xxx”。</div> : <div className="today-task-list">{todayTasks.map((task) => <TodayTaskItem key={task.id} task={task} onUpdateStep={onUpdateStep} />)}</div>}
+        {agendaTasks.length === 0 ? <div className="empty-state">你还没有待办任务，可以在右侧创建，或直接和我说“创建任务xxx”。</div> : <div className="today-task-list">{agendaTasks.map((task) => <TodayTaskItem key={task.id} task={task} onUpdateStep={onUpdateStep} onToggleTask={onToggleTask} />)}</div>}
       </div>
 
-      <div className="board-block">
-        <h3>作息时间轴</h3>
-        <div className="timeline-lite"><span>09:00 开始工作</span><span>12:00 午间调整</span><span>18:00 收尾复盘</span></div>
-      </div>
-
-      <div className="pet-status">{petText}</div>
       {latestRisk && <div className="risk-banner">风险提醒：{latestRisk.reason}</div>}
-      <div className="motivation">今日激励语：把任务切小一点，完成感会自己长出来。</div>
     </section>
   );
 }
 
-function TodayTaskItem({ task, onUpdateStep }) {
+function getAgendaProgress(tasks) {
+  return tasks.reduce((acc, task) => {
+    if (task.steps.length === 0) {
+      return { done: acc.done + (task.status === '已完成' ? 1 : 0), total: acc.total + 1 };
+    }
+    const progress = getProgress(task);
+    return { done: acc.done + progress.done, total: acc.total + progress.total };
+  }, { done: 0, total: 0 });
+}
+
+function getSortedAgendaTasks(tasks) {
+  return tasks
+    .filter((task) => task.status !== '已完成')
+    .sort((a, b) => getSortRank(a) - getSortRank(b) || getDaysLeft(a.deadlineDate) - getDaysLeft(b.deadlineDate) || a.createdAt.localeCompare(b.createdAt));
+}
+
+function getSortRank(task) {
+  const days = getDaysLeft(task.deadlineDate);
+  if (days < 0) return 0;
+  if (task.type === 'today') return 1;
+  if (days === 0) return 2;
+  if (days <= 3) return 3;
+  if (days <= 7) return 4;
+  if (task.type === 'long') return 5;
+  return 6;
+}
+
+function TodayTaskItem({ task, onUpdateStep, onToggleTask }) {
   const progress = getProgress(task);
+  const daysText = getDaysText(task.deadlineDate);
   return (
     <article className="today-item">
-      <div className="task-card-head"><h4>{task.name}</h4><span>{progress.done}/{progress.total}</span></div>
-      {task.steps.length === 0 ? <p className="muted">还没有步骤，可以在右侧任务管理中拆解。</p> : task.steps.map((step) => (
-        <label className="today-step" key={step.id}>
-          <input type="checkbox" checked={step.done} onChange={(event) => onUpdateStep(task.id, step.id, { done: event.target.checked })} />
-          <span>{step.title}</span>
+      <div className="task-card-head"><h4>{task.name}</h4><span>{daysText}</span></div>
+      {task.steps.length === 0 ? (
+        <label className="today-step whole-task">
+          <input type="checkbox" checked={task.status === '已完成'} onChange={(event) => onToggleTask(task.id, { status: event.target.checked ? '已完成' : '进行中' })} />
+          <span>完整任务：未拆分，直接勾选即可完成</span>
         </label>
-      ))}
+      ) : (
+        <>
+          <MiniProgress label={`母任务进度 ${progress.done}/${progress.total}`} value={progress.percent} />
+          {task.steps.map((step) => (
+            <label className="today-step" key={step.id}>
+              <input type="checkbox" checked={step.done} onChange={(event) => onUpdateStep(task.id, step.id, { done: event.target.checked })} />
+              <span>{step.title}</span>
+            </label>
+          ))}
+        </>
+      )}
     </article>
   );
 }
@@ -465,13 +492,12 @@ function ActiveWorkspace(props) {
 
   if (activeNav === 'settings') return <AIConfigPanel config={config} message={configMessage} onChange={onConfigChange} onProviderChange={onProviderChange} onSubmit={onSaveConfig} />;
   if (activeNav === 'stats') return <section className="panel"><SectionTitle index="03" title="统计" /><VisualSummary tasks={tasks} analytics={analytics} shareStats={shareStats} weeklySummary={weeklySummary} monthlySummary={monthlySummary} onWeekly={onWeekly} onMonthly={onMonthly} onClear={onClear} /></section>;
-  if (activeNav === 'schedule') return <section className="panel"><SectionTitle index="03" title="作息" /><div className="empty-state">作息模块已常驻在今日看板。后续可在这里扩展上下班、午休和专注时段设置。</div></section>;
-  if (activeNav === 'pet') return <section className="panel"><SectionTitle index="03" title="宠物" /><div className="pet-status">小鹰仔会根据真实完成步骤数变化，不编造进度。</div></section>;
   if (activeNav === 'knowledge') return <section className="panel"><SectionTitle index="03" title="制造知识角" /><div className="empty-state">这里预留制造知识、SOP、FAQ 与内部资料入口。当前不展示假资料。</div></section>;
 
   return (
     <section className="panel task-pool-panel">
       <SectionTitle index="03" title="任务&标签管理" />
+      <div className="motivation">今日激励语：把计划变成下一步，把下一步变成一个可勾选动作。</div>
       <AddTaskPanel form={taskForm} onChange={onTaskFormChange} onSubmit={onAddTask} />
       {aiNotice && <div className="notice">{aiNotice}</div>}
       <div className="task-columns">

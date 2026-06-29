@@ -475,20 +475,13 @@ label { display: grid; gap: 8px; color: var(--muted); font-size: 14px; }
   color: var(--text);
 }
 .today-step input { width: auto; }
-.timeline-lite {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
-  margin-top: 12px;
-}
-.timeline-lite span {
+.today-step.whole-task {
   padding: 12px;
   border: 1px solid rgba(56, 222, 254, 0.18);
-  border-radius: 16px;
-  color: #d7efff;
+  border-radius: 14px;
   background: rgba(56, 222, 254, 0.06);
 }
-.pet-status, .motivation, .risk-banner {
+.motivation, .risk-banner {
   padding: 16px;
   border-radius: 18px;
   background: rgba(96, 242, 165, 0.08);
@@ -549,7 +542,7 @@ label { display: grid; gap: 8px; color: var(--muted); font-size: 14px; }
     gap: 12px;
   }
   .panel { padding: 16px; }
-  .timeline-lite, .summary-grid, .visual-grid {
+  .summary-grid, .visual-grid {
     grid-template-columns: 1fr;
   }
 }

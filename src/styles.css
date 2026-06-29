@@ -481,6 +481,15 @@ label { display: grid; gap: 8px; color: var(--muted); font-size: 14px; }
   border-radius: 14px;
   background: rgba(56, 222, 254, 0.06);
 }
+.overview-task { margin-top: 0; }
+.overview-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
 .motivation, .risk-banner {
   padding: 16px;
   border-radius: 18px;
@@ -491,6 +500,16 @@ label { display: grid; gap: 8px; color: var(--muted); font-size: 14px; }
   border: 1px solid rgba(255, 189, 102, 0.35);
   background: rgba(255, 189, 102, 0.12);
   color: var(--orange);
+}
+.brand-button {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 26px;
+  font-weight: 900;
+  text-align: left;
 }
 .right-nav h1 {
   margin: 0 0 6px;
@@ -549,6 +568,17 @@ label { display: grid; gap: 8px; color: var(--muted); font-size: 14px; }
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.055);
   color: var(--text);
+}
+.settings-grid {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+.settings-card {
+  padding: 14px;
+  border: 1px solid rgba(155, 176, 201, 0.14);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.04);
 }
 .task-confirm-card {
   display: grid;

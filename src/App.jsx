@@ -52,7 +52,7 @@ export default function App() {
   const [riskRecords, setRiskRecords] = useState(() => loadJson(STORAGE_KEYS.riskRecords, []));
   const [weeklySummary, setWeeklySummary] = useState(null);
   const [monthlySummary, setMonthlySummary] = useState(null);
-  const [activeNav, setActiveNav] = useState('tasks');
+  const [activeNav, setActiveNav] = useState('dashboard');
   const [dogMessage, setDogMessage] = useState('今天也带着小狗一起推进任务吧。');
   const [pendingTaskDraft, setPendingTaskDraft] = useState(null);
 
@@ -245,6 +245,33 @@ export default function App() {
     }));
   }
 
+  function toggleAgendaTask(task, done) {
+    if (task.steps.length === 0) {
+      updateTask(task.id, { status: done ? '已完成' : '进行中' });
+      return;
+    }
+
+    setTasks((current) => current.map((item) => {
+      if (item.id !== task.id) return item;
+      const steps = item.steps.map((step) => {
+        if (step.done !== done) addStepRecord(item, step, done);
+        return { ...step, done };
+      });
+      return {
+        ...item,
+        steps,
+        status: done ? '已完成' : '进行中',
+        completedAt: done ? new Date().toISOString() : '',
+        completedDate: done ? todayISO() : '',
+        updatedAt: new Date().toISOString()
+      };
+    }));
+    if (done) {
+      addLog('task-completed', { taskId: task.id, taskName: task.name });
+      setDogMessage('完成了一个完整任务，小狗开心地绕着你转了一圈。');
+    }
+  }
+
   async function sendQuestion() {
     if (!question.trim()) return;
     const text = question.trim();
@@ -357,13 +384,10 @@ export default function App() {
         </aside>
 
         <section className="center-board">
-          <TodayBoard
-            agendaTasks={agendaTasks}
-            latestRisk={latestRisk}
-            onUpdateStep={updateStep}
-            onToggleTask={updateTask}
-          />
-          <ActiveWorkspace
+          {activeNav === 'dashboard' ? (
+            <TodayBoard agendaTasks={agendaTasks} latestRisk={latestRisk} onToggleTask={toggleAgendaTask} />
+          ) : (
+            <ActiveWorkspace
             activeNav={activeNav}
             tasks={tasks}
             taskForm={taskForm}
@@ -392,11 +416,12 @@ export default function App() {
             onWeekly={() => setWeeklySummary(buildWeeklyRecordSummary(tasks, stepRecords))}
             onMonthly={() => setMonthlySummary(buildMonthlyRecordSummary(tasks, stepRecords))}
             onClear={clearLocalData}
-          />
+            />
+          )}
         </section>
 
         <aside className="right-nav panel">
-          <h1>TCL计划Agent</h1>
+          <button className="brand-button" onClick={() => setActiveNav('dashboard')}>TCL计划Agent</button>
           <p className="muted">桌面工作台</p>
           <NavMenu active={activeNav} onChange={setActiveNav} />
           <TaskDog stepRecords={stepRecords} tasks={tasks} message={dogMessage} onInteract={setDogMessage} />
@@ -414,7 +439,6 @@ function NavMenu({ active, onChange }) {
   const items = [
     ['tasks', '🏷️', '任务&标签管理'],
     ['stats', '📊', '统计'],
-    ['knowledge', '🏭', '制造知识角'],
     ['settings', '⚙️', '系统设置']
   ];
   return <nav className="nav-menu">{items.map(([key, icon, label]) => <button key={key} className={active === key ? 'active' : ''} onClick={() => onChange(key)}><span>{icon}</span>{label}</button>)}</nav>;
@@ -491,7 +515,7 @@ function getCompletionStreak(stepRecords, tasks) {
   return streak;
 }
 
-function TodayBoard({ agendaTasks, latestRisk, onUpdateStep, onToggleTask }) {
+function TodayBoard({ agendaTasks, latestRisk, onToggleTask }) {
   const date = new Date();
   const weekday = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'][date.getDay()];
   const dateText = `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')} ${weekday}`;
@@ -509,7 +533,7 @@ function TodayBoard({ agendaTasks, latestRisk, onUpdateStep, onToggleTask }) {
 
       <div className="board-block">
         <h3>今日任务</h3>
-        {agendaTasks.length === 0 ? <div className="empty-state">你还没有待办任务，可以在右侧创建，或直接和我说“创建任务xxx”。</div> : <div className="today-task-list">{agendaTasks.map((task) => <TodayTaskItem key={task.id} task={task} onUpdateStep={onUpdateStep} onToggleTask={onToggleTask} />)}</div>}
+        {agendaTasks.length === 0 ? <div className="empty-state">你还没有待办任务，可以在右侧创建，或直接和我说“创建任务xxx”。</div> : <div className="today-task-list">{agendaTasks.map((task) => <TodayTaskItem key={task.id} task={task} onToggleTask={onToggleTask} />)}</div>}
       </div>
 
       {latestRisk && <div className="risk-banner">风险提醒：{latestRisk.reason}</div>}
@@ -625,28 +649,16 @@ function toLocalISO(date) {
   return new Date(date.getTime() - date.getTimezoneOffset() * 60 * 1000).toISOString().slice(0, 10);
 }
 
-function TodayTaskItem({ task, onUpdateStep, onToggleTask }) {
-  const progress = getProgress(task);
+function TodayTaskItem({ task, onToggleTask }) {
   const daysText = getDaysText(task.deadlineDate);
+  const checked = task.status === '已完成';
   return (
     <article className="today-item">
-      <div className="task-card-head"><h4>{task.name}</h4><span>{task.status === '已完成' ? '已完成' : daysText}</span></div>
-      {task.steps.length === 0 ? (
-        <label className="today-step whole-task">
-          <input type="checkbox" checked={task.status === '已完成'} onChange={(event) => onToggleTask(task.id, { status: event.target.checked ? '已完成' : '进行中' })} />
-          <span>完整任务：未拆分，直接勾选即可完成</span>
-        </label>
-      ) : (
-        <>
-          <MiniProgress label={`母任务进度 ${progress.done}/${progress.total}`} value={progress.percent} />
-          {task.steps.map((step) => (
-            <label className="today-step" key={step.id}>
-              <input type="checkbox" checked={step.done} onChange={(event) => onUpdateStep(task.id, step.id, { done: event.target.checked })} />
-              <span>{step.title}</span>
-            </label>
-          ))}
-        </>
-      )}
+      <label className="today-step whole-task overview-task">
+        <input type="checkbox" checked={checked} onChange={(event) => onToggleTask(task, event.target.checked)} />
+        <span>{task.name}</span>
+      </label>
+      <div className="overview-meta"><span>{checked ? '已完成' : daysText}</span><span>{task.steps.length ? '已拆分' : '未拆分'}</span></div>
     </article>
   );
 }
@@ -685,7 +697,6 @@ function ActiveWorkspace(props) {
 
   if (activeNav === 'settings') return <AIConfigPanel config={config} message={configMessage} onChange={onConfigChange} onProviderChange={onProviderChange} onSubmit={onSaveConfig} />;
   if (activeNav === 'stats') return <section className="panel"><SectionTitle index="03" title="统计" /><VisualSummary tasks={tasks} analytics={analytics} shareStats={shareStats} weeklySummary={weeklySummary} monthlySummary={monthlySummary} onWeekly={onWeekly} onMonthly={onMonthly} onClear={onClear} /></section>;
-  if (activeNav === 'knowledge') return <section className="panel"><SectionTitle index="03" title="制造知识角" /><div className="empty-state">这里预留制造知识、SOP、FAQ 与内部资料入口。当前不展示假资料。</div></section>;
 
   return (
     <section className="panel task-pool-panel">
@@ -754,6 +765,11 @@ function AIConfigPanel({ config, message, onChange, onProviderChange, onSubmit }
       <p className={config.hasApiKey ? 'success-text' : 'warning-text'}>{config.hasApiKey ? 'AI服务已配置。请求会发送到本站 /api，再由服务端函数转发给模型。' : '未配置AI服务。可使用本地示例拆解，但必须明确：本地示例，不是AI结果。'}</p>
       {modelMessage && <div className="notice">{modelMessage}</div>}
       {message && <div className="notice">{message}</div>}
+      <div className="settings-grid">
+        <div className="settings-card"><h4>数据管理</h4><p>任务、步骤、聊天和统计数据保存在当前浏览器 localStorage。</p></div>
+        <div className="settings-card"><h4>导出</h4><p>可通过浏览器开发者工具导出 localStorage。后续可扩展为一键导出 JSON。</p></div>
+        <div className="settings-card"><h4>分享设置</h4><p>监督分享卡默认只分享统计结果，不展示具体任务内容。</p></div>
+      </div>
     </section>
   );
 }
@@ -883,7 +899,7 @@ function VisualSummary({ tasks, analytics, shareStats, weeklySummary, monthlySum
 
       <div className="visual-grid">
         <div className="summary-card"><h4>任务类型占比</h4>{TASK_TYPES.map((item) => <MiniProgress key={item.value} label={`${item.column} ${tasks.filter((task) => task.type === item.value).length}个`} value={tasks.length ? Math.round((tasks.filter((task) => task.type === item.value).length / tasks.length) * 100) : 0} />)}</div>
-        <div className="summary-card"><h4>长期任务倒计时</h4>{tasks.filter((task) => task.type === 'long').length ? tasks.filter((task) => task.type === 'long').map((task) => <div className="countdown" key={task.id}><span>{task.name}</span><b>{getDaysText(task.deadlineDate)}</b></div>) : <p className="muted">暂无长期任务。</p>}</div>
+        <div className="summary-card"><h4>长期任务完成率</h4><MiniProgress label={getLongTaskProgress(tasks).label} value={getLongTaskProgress(tasks).percent} /></div>
       </div>
 
       <ShareCard stats={shareStats} />
@@ -900,12 +916,19 @@ function TodayCompletionCard({ stats }) {
   const percent = stats.todayTotal ? Math.round((stats.todayDone / stats.todayTotal) * 100) : 0;
   return (
     <div className="summary-card">
-      <h4>今日任务完成状态</h4>
+      <h4>今日完成率</h4>
       <BigNumber value={`${stats.todayDone}/${stats.todayTotal}`} suffix="" />
       <MiniProgress label={label} value={percent} />
-      <p>今日任务是否完成，按当前今日任务的全部步骤勾选状态判断。</p>
+      <p>按今天真实完成的步骤记录计算，不展示具体任务内容。</p>
     </div>
   );
+}
+
+function getLongTaskProgress(tasks) {
+  const longTasks = tasks.filter((task) => task.type === 'long');
+  const total = longTasks.length;
+  const done = longTasks.filter((task) => task.status === '已完成').length;
+  return { label: `${done}/${total} 个长期任务已完成`, percent: total ? Math.round((done / total) * 100) : 0 };
 }
 
 function BigNumber({ value, suffix }) {

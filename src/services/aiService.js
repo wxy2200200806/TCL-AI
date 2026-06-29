@@ -20,6 +20,17 @@ export async function askAgent(question, task, messages = [], config) {
   return data.answer;
 }
 
+export async function fetchModelList(config) {
+  const response = await fetch('/api/models', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ config })
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || '模型列表拉取失败');
+  return data.models;
+}
+
 export function localExampleDecompose(task) {
   const base = [
     '明确任务目标和最终交付物',

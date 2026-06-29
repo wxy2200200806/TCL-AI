@@ -95,6 +95,28 @@ app.post('/api/ask', async (req, res) => {
   }
 });
 
+app.post('/api/models', async (req, res) => {
+  const { config: requestConfig } = req.body || {};
+  const config = normalizeConfig(requestConfig || readConfig());
+  if (!config.apiKey || !config.baseUrl) return res.status(400).json({ error: '请先填写 API Key 和 Base URL。' });
+  const endpoint = `${config.baseUrl.replace(/\/$/, '')}/models`;
+  try {
+    const response = await fetch(endpoint, {
+      method: 'GET',
+      headers: { authorization: `Bearer ${config.apiKey}` }
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      return res.status(response.status).json({ error: `模型列表拉取失败：${response.status} ${text.slice(0, 200)}` });
+    }
+    const data = await response.json();
+    const models = Array.isArray(data.data) ? data.data.map((item) => item.id).filter(Boolean) : [];
+    res.json({ models });
+  } catch (error) {
+    res.status(500).json({ error: error.message || '模型列表拉取失败' });
+  }
+});
+
 app.listen(port, () => {
   console.log(`TCL计划Agent API server running at http://127.0.0.1:${port}`);
 });

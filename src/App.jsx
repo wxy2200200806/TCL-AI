@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { PROVIDERS, STORAGE_KEYS, TASK_TYPES } from './data.js';
-import { askAgent, decomposeTaskWithAI, localExampleDecompose } from './services/aiService.js';
+import { askAgent, decomposeTaskWithAI, fetchModelList, localExampleDecompose } from './services/aiService.js';
 import {
   buildCompletionAnalytics,
   buildMonthlyRecordSummary,
@@ -53,6 +53,7 @@ export default function App() {
   const [weeklySummary, setWeeklySummary] = useState(null);
   const [monthlySummary, setMonthlySummary] = useState(null);
   const [activeNav, setActiveNav] = useState('tasks');
+  const [dogMessage, setDogMessage] = useState('今天也带着小狗一起推进任务吧。');
 
   const selectedTask = tasks.find((task) => task.id === selectedTaskId) || tasks[0];
   const chatScopeId = 'global';
@@ -123,22 +124,16 @@ export default function App() {
     setTaskForm(emptyTaskForm);
   }
 
-  async function createTaskFromChat(text) {
-    const name = text.replace(/^(帮我)?创建任务/, '').trim() || text.trim();
-    const task = createTask({ name, description: '通过对话窗口创建', type: 'today', deadlineDate: todayISO() });
+  function createTaskFromChat(text) {
+    const parsed = parseNaturalTask(text);
+    if (!parsed.intentCertain) return '你是想创建任务，还是想咨询这个任务怎么做？';
+    if (parsed.missing) return parsed.missing;
+    const task = createTask(parsed.task);
     setTasks((current) => [...current, task]);
     setSelectedTaskId(task.id);
     addLog('task-added', { taskId: task.id, taskName: task.name });
-    if (aiConfig.hasApiKey) {
-      try {
-        const steps = await decomposeTaskWithAI(task, aiConfig);
-        applySteps(task.id, stepsFromTitles(steps, 'AI拆解建议，可手动修改'));
-        return `我已根据你的指令创建任务，并尝试完成AI拆解。请在右侧“任务&标签管理”中检查、修改和确认。`;
-      } catch {
-        return `我已先创建任务，但AI拆解暂时失败。你可以在右侧使用“本地示例拆解”或补充AI配置后再拆解。`;
-      }
-    }
-    return `我已创建任务草稿。当前是手动模式，请在右侧“任务&标签管理”中补充或拆解。`;
+    setActiveNav('tasks');
+    return '任务已创建，你可以稍后点击 AI拆解，并在拆解前修改任务信息。';
   }
 
   async function decomposeWithAI(task) {
@@ -161,7 +156,19 @@ export default function App() {
   }
 
   function updateTask(taskId, patch) {
-    setTasks((current) => current.map((task) => (task.id === taskId ? { ...task, ...patch, updatedAt: new Date().toISOString() } : task)));
+    const currentTask = tasks.find((task) => task.id === taskId);
+    const completePatch = Object.prototype.hasOwnProperty.call(patch, 'status') && patch.status === '已完成';
+    const reopenPatch = Object.prototype.hasOwnProperty.call(patch, 'status') && patch.status !== '已完成';
+    const nextPatch = {
+      ...patch,
+      ...(completePatch ? { completedAt: new Date().toISOString(), completedDate: todayISO() } : {}),
+      ...(reopenPatch ? { completedAt: '', completedDate: '' } : {})
+    };
+    setTasks((current) => current.map((task) => (task.id === taskId ? { ...task, ...nextPatch, updatedAt: new Date().toISOString() } : task)));
+    if (completePatch && currentTask?.status !== '已完成') {
+      addLog('task-completed', { taskId, taskName: currentTask.name });
+      setDogMessage('完成了一个完整任务，小狗开心地绕着你转了一圈。');
+    }
   }
 
   function deleteTask(taskId) {
@@ -185,10 +192,20 @@ export default function App() {
     setTasks((current) => current.map((task) => {
       if (task.id !== taskId) return task;
       const steps = task.steps.map((step) => (step.id === stepId ? { ...step, ...patch } : step));
-      return updateTaskAutoStatus({ ...task, steps });
+      const nextTask = updateTaskAutoStatus({ ...task, steps });
+      if (nextTask.status === '已完成' && task.status !== '已完成') {
+        return { ...nextTask, completedAt: new Date().toISOString(), completedDate: todayISO() };
+      }
+      if (nextTask.status !== '已完成') {
+        return { ...nextTask, completedAt: '', completedDate: '' };
+      }
+      return nextTask;
     }));
 
-    if (didDoneChange) addStepRecord(currentTask, currentStep, patch.done);
+    if (didDoneChange) {
+      addStepRecord(currentTask, currentStep, patch.done);
+      if (patch.done) setDogMessage('完成一个步骤，小狗获得了一点能量。');
+    }
     if (willCompleteStep) addLog('step-completed', { taskId, taskName: currentTask.name, stepId, stepTitle: currentStep.title });
     if (willCompleteTask) addLog('task-completed', { taskId, taskName: currentTask.name });
   }
@@ -216,15 +233,22 @@ export default function App() {
   async function sendQuestion() {
     if (!question.trim()) return;
     const text = question.trim();
-    const scopeId = selectedTask?.id || 'global';
+    const scopeId = chatScopeId;
     const userMessage = { role: 'user', content: text, time: new Date().toISOString(), taskId: scopeId };
     const nextMessages = [...selectedTaskMessages, userMessage];
     setChatMessages((current) => ({ ...current, [scopeId]: nextMessages }));
     setQuestion('');
 
-    if (/创建任务/.test(text)) {
-      const content = await createTaskFromChat(text);
+    const intent = detectChatIntent(text);
+    if (intent === 'create') {
+      const content = createTaskFromChat(text);
       const assistantMessage = { role: 'assistant', content, time: new Date().toISOString(), taskId: scopeId };
+      setChatMessages((current) => ({ ...current, [scopeId]: [...(current[scopeId] || nextMessages), assistantMessage] }));
+      return;
+    }
+
+    if (intent === 'uncertain') {
+      const assistantMessage = { role: 'assistant', content: '你是想创建任务，还是想咨询这个任务怎么做？', time: new Date().toISOString(), taskId: scopeId };
       setChatMessages((current) => ({ ...current, [scopeId]: [...(current[scopeId] || nextMessages), assistantMessage] }));
       return;
     }
@@ -239,8 +263,8 @@ export default function App() {
       return;
     }
 
-    if (!selectedTask || !aiConfig.hasApiKey) {
-      const content = aiConfig.hasApiKey ? '请先创建或选择一个任务，我再结合任务上下文回答。' : '当前为手动模式：你可以创建任务、勾选进度、生成总结；需要AI问答时，请先在系统设置里填写并保存API配置。';
+    if (!aiConfig.hasApiKey) {
+      const content = '当前为手动模式：你可以创建任务、勾选进度、生成总结；需要AI问答时，请先在系统设置里填写并保存API配置。';
       const assistantMessage = { role: 'assistant', content, time: new Date().toISOString(), taskId: scopeId };
       setChatMessages((current) => ({ ...current, [scopeId]: [...(current[scopeId] || nextMessages), assistantMessage] }));
       return;
@@ -248,7 +272,7 @@ export default function App() {
 
     try {
       const apiMessages = nextMessages.map(({ role, content }) => ({ role, content }));
-      const content = await askAgent(question, selectedTask, apiMessages, aiConfig);
+      const content = await askAgent(text, selectedTask, apiMessages, aiConfig);
       const assistantMessage = { role: 'assistant', content, time: new Date().toISOString(), taskId: scopeId };
       setChatMessages((current) => ({ ...current, [scopeId]: [...(current[scopeId] || nextMessages), assistantMessage] }));
     } catch (error) {
@@ -359,6 +383,7 @@ export default function App() {
           <h1>TCL计划Agent</h1>
           <p className="muted">桌面工作台</p>
           <NavMenu active={activeNav} onChange={setActiveNav} />
+          <TaskDog stepRecords={stepRecords} tasks={tasks} message={dogMessage} onInteract={setDogMessage} />
         </aside>
       </main>
     </div>
@@ -379,6 +404,60 @@ function NavMenu({ active, onChange }) {
   return <nav className="nav-menu">{items.map(([key, icon, label]) => <button key={key} className={active === key ? 'active' : ''} onClick={() => onChange(key)}><span>{icon}</span>{label}</button>)}</nav>;
 }
 
+function TaskDog({ stepRecords, tasks, message, onInteract }) {
+  const stats = getDogStats(stepRecords, tasks);
+  const interactions = {
+    feed: '你给小狗喂了一点小零食，它开心地甩了甩尾巴。',
+    pat: '你摸了摸小狗的脑袋，它安静地趴在你旁边陪你工作。',
+    walk: '你带小狗散步了一会儿，脑子也清醒了一点。',
+    rest: '小狗趴下休息了，也提醒你别把自己安排太满。'
+  };
+  return (
+    <section className="task-dog-card">
+      <h3>任务小狗</h3>
+      <div className="dog-face">🐶</div>
+      <b>{stats.status}</b>
+      <p>{message}</p>
+      <small>今日完成步骤 {stats.todaySteps} · 今日完成任务 {stats.todayTasks} · 连续完成 {stats.streakDays} 天</small>
+      <div className="dog-actions">
+        <button onClick={() => onInteract(interactions.feed)}>喂食</button>
+        <button onClick={() => onInteract(interactions.pat)}>摸摸</button>
+        <button onClick={() => onInteract(interactions.walk)}>散步</button>
+        <button onClick={() => onInteract(interactions.rest)}>休息</button>
+      </div>
+    </section>
+  );
+}
+
+function getDogStats(stepRecords, tasks) {
+  const today = todayISO();
+  const todaySteps = getLatestStepRecords(stepRecords).filter((record) => record.date === today && record.completed).length;
+  const todayTasks = tasks.filter((task) => task.completedDate === today).length;
+  const activeCount = Math.max(todaySteps, todayTasks > 0 && todaySteps === 0 ? 1 : todaySteps);
+  const status = activeCount === 0 ? '饿了' : activeCount <= 2 ? '普通' : activeCount <= 5 ? '开心' : '精力满满';
+  return { status, todaySteps, todayTasks, streakDays: getCompletionStreak(stepRecords, tasks) };
+}
+
+function getLatestStepRecords(records) {
+  const map = new Map();
+  records.forEach((record, index) => map.set(`${record.date}:${record.taskId}:${record.stepId}`, { ...record, index }));
+  return [...map.values()];
+}
+
+function getCompletionStreak(stepRecords, tasks) {
+  const dates = new Set([
+    ...getLatestStepRecords(stepRecords).filter((record) => record.completed).map((record) => record.date),
+    ...tasks.filter((task) => task.completedDate).map((task) => task.completedDate)
+  ]);
+  let streak = 0;
+  const cursor = new Date(`${todayISO()}T00:00:00`);
+  while (dates.has(toLocalISO(cursor))) {
+    streak += 1;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  return streak;
+}
+
 function TodayBoard({ agendaTasks, latestRisk, onUpdateStep, onToggleTask }) {
   const date = new Date();
   const weekday = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'][date.getDay()];
@@ -396,7 +475,7 @@ function TodayBoard({ agendaTasks, latestRisk, onUpdateStep, onToggleTask }) {
       </div>
 
       <div className="board-block">
-        <h3>今日待办</h3>
+        <h3>今日任务</h3>
         {agendaTasks.length === 0 ? <div className="empty-state">你还没有待办任务，可以在右侧创建，或直接和我说“创建任务xxx”。</div> : <div className="today-task-list">{agendaTasks.map((task) => <TodayTaskItem key={task.id} task={task} onUpdateStep={onUpdateStep} onToggleTask={onToggleTask} />)}</div>}
       </div>
 
@@ -417,19 +496,100 @@ function getAgendaProgress(tasks) {
 
 function getSortedAgendaTasks(tasks) {
   return tasks
-    .filter((task) => task.status !== '已完成')
+    .filter((task) => task.status !== '已完成' || task.completedDate === todayISO())
     .sort((a, b) => getSortRank(a) - getSortRank(b) || getDaysLeft(a.deadlineDate) - getDaysLeft(b.deadlineDate) || a.createdAt.localeCompare(b.createdAt));
 }
 
 function getSortRank(task) {
+  if (task.status === '已完成' && task.completedDate === todayISO()) return 5;
   const days = getDaysLeft(task.deadlineDate);
   if (days < 0) return 0;
-  if (task.type === 'today') return 1;
-  if (days === 0) return 2;
-  if (days <= 3) return 3;
-  if (days <= 7) return 4;
-  if (task.type === 'long') return 5;
+  if (days === 0) return 1;
+  if (task.type === 'today') return 2;
+  if (task.type === 'short') return 3;
+  if (task.type === 'long') return 4;
   return 6;
+}
+
+function detectChatIntent(text) {
+  const createWords = /创建任务|添加任务|帮我加|加个|截止|到期|明天前|今天前|今天截止|明天截止|完成给|前完成/;
+  const askWords = /怎么做|为什么|帮我想|第一步|注意什么|如何|怎么办|思路/;
+  if (createWords.test(text)) return 'create';
+  if (askWords.test(text)) return 'ask';
+  return 'uncertain';
+}
+
+function parseNaturalTask(text) {
+  const deadlineDate = parseDeadline(text);
+  const name = extractTaskName(text);
+  if (!name) return { intentCertain: true, missing: '我可以帮你创建任务。任务名称是什么？' };
+  if (!deadlineDate) return { intentCertain: true, missing: '这个任务的截止日期是哪一天？你可以说“今天截止”“明天前”或“截止到7月3日”。' };
+  return {
+    intentCertain: true,
+    task: {
+      name,
+      description: `通过智能对话创建：${text}`,
+      type: inferTaskType(text, deadlineDate),
+      deadlineDate
+    }
+  };
+}
+
+function parseDeadline(text) {
+  const today = new Date(`${todayISO()}T00:00:00`);
+  if (/今天前|今天截止|今天/.test(text)) return todayISO();
+  if (/明天前|明天截止|明天/.test(text)) return addDays(today, 1);
+
+  const nextMonthMatch = text.match(/下个月\s*(\d{1,2})\s*[号日]/);
+  if (nextMonthMatch) {
+    const date = new Date(today);
+    date.setMonth(date.getMonth() + 1, Number(nextMonthMatch[1]));
+    return toLocalISO(date);
+  }
+
+  const monthDayMatch = text.match(/(\d{1,2})\s*月\s*(\d{1,2})\s*[号日]?/);
+  if (monthDayMatch) {
+    const year = today.getFullYear();
+    const candidate = new Date(year, Number(monthDayMatch[1]) - 1, Number(monthDayMatch[2]));
+    if (candidate < today) candidate.setFullYear(year + 1);
+    return toLocalISO(candidate);
+  }
+
+  const isoMatch = text.match(/(20\d{2})[-/年](\d{1,2})[-/月](\d{1,2})/);
+  if (isoMatch) return toLocalISO(new Date(Number(isoMatch[1]), Number(isoMatch[2]) - 1, Number(isoMatch[3])));
+  return '';
+}
+
+function extractTaskName(text) {
+  return text
+    .replace(/创建一个任务[:：]?|创建任务[:：]?|添加任务[:：]?|帮我加个?长期任务[:：]?|帮我加个?任务[:：]?/g, '')
+    .replace(/(，|,)?\s*下个月\s*\d{1,2}\s*[号日](截止|到期)?/g, '')
+    .replace(/(，|,)?\s*\d{1,2}\s*月\s*\d{1,2}\s*[号日]?(截止|到期)?/g, '')
+    .replace(/(，|,)?\s*截止到?.*$/g, '')
+    .replace(/明天前完成?/g, '')
+    .replace(/今天前完成?/g, '')
+    .replace(/今天截止|明天截止|截止|到期/g, '')
+    .replace(/^完成/, '')
+    .trim()
+    .replace(/^[:：,，。]+|[:：,，。]+$/g, '');
+}
+
+function inferTaskType(text, deadlineDate) {
+  if (/长期/.test(text)) return 'long';
+  const days = getDaysLeft(deadlineDate);
+  if (days <= 0 || /今日|今天/.test(text)) return 'today';
+  if (days > 14) return 'long';
+  return 'short';
+}
+
+function addDays(date, days) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return toLocalISO(next);
+}
+
+function toLocalISO(date) {
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60 * 1000).toISOString().slice(0, 10);
 }
 
 function TodayTaskItem({ task, onUpdateStep, onToggleTask }) {
@@ -437,7 +597,7 @@ function TodayTaskItem({ task, onUpdateStep, onToggleTask }) {
   const daysText = getDaysText(task.deadlineDate);
   return (
     <article className="today-item">
-      <div className="task-card-head"><h4>{task.name}</h4><span>{daysText}</span></div>
+      <div className="task-card-head"><h4>{task.name}</h4><span>{task.status === '已完成' ? '已完成' : daysText}</span></div>
       {task.steps.length === 0 ? (
         <label className="today-step whole-task">
           <input type="checkbox" checked={task.status === '已完成'} onChange={(event) => onToggleTask(task.id, { status: event.target.checked ? '已完成' : '进行中' })} />
@@ -526,6 +686,25 @@ function ActiveWorkspace(props) {
 }
 
 function AIConfigPanel({ config, message, onChange, onProviderChange, onSubmit }) {
+  const [modelOptions, setModelOptions] = useState([]);
+  const [modelMessage, setModelMessage] = useState('');
+  const [loadingModels, setLoadingModels] = useState(false);
+
+  async function loadModels() {
+    setLoadingModels(true);
+    setModelMessage('');
+    try {
+      const models = await fetchModelList(config);
+      setModelOptions(models);
+      setModelMessage(models.length ? `已拉取 ${models.length} 个模型。` : '接口返回成功，但没有可用模型。你仍可手动输入 Model。');
+    } catch (error) {
+      setModelOptions([]);
+      setModelMessage(`${error.message}。你仍可手动输入 Model。`);
+    } finally {
+      setLoadingModels(false);
+    }
+  }
+
   return (
     <section className="panel">
       <SectionTitle index="01" title="AI配置" />
@@ -534,10 +713,13 @@ function AIConfigPanel({ config, message, onChange, onProviderChange, onSubmit }
         <label>Provider<select value={config.provider} onChange={(event) => onProviderChange(event.target.value)}>{PROVIDERS.map((provider) => <option value={provider.value} key={provider.value}>{provider.label}</option>)}</select></label>
         <label>API Key<input type="password" value={config.apiKey} onChange={(event) => onChange({ ...config, apiKey: event.target.value, hasApiKey: Boolean(event.target.value) })} placeholder="请输入自己的API Key" /></label>
         <label>Base URL<input value={config.baseUrl} onChange={(event) => onChange({ ...config, baseUrl: event.target.value })} /></label>
-        <label>Model<input value={config.model} onChange={(event) => onChange({ ...config, model: event.target.value })} /></label>
+        <label>Model<input value={config.model} onChange={(event) => onChange({ ...config, model: event.target.value })} placeholder="可手动输入，或先拉取模型列表" /></label>
+        {modelOptions.length > 0 && <label>选择模型<select value={config.model} onChange={(event) => onChange({ ...config, model: event.target.value })}><option value="">请选择模型</option>{modelOptions.map((model) => <option value={model} key={model}>{model}</option>)}</select></label>}
+        <button type="button" className="secondary-action" onClick={loadModels} disabled={loadingModels}>{loadingModels ? '拉取中...' : '拉取模型列表'}</button>
         <button className="primary-action">保存到浏览器</button>
       </form>
       <p className={config.hasApiKey ? 'success-text' : 'warning-text'}>{config.hasApiKey ? 'AI服务已配置。请求会发送到本站 /api，再由服务端函数转发给模型。' : '未配置AI服务。可使用本地示例拆解，但必须明确：本地示例，不是AI结果。'}</p>
+      {modelMessage && <div className="notice">{modelMessage}</div>}
       {message && <div className="notice">{message}</div>}
     </section>
   );
@@ -603,6 +785,7 @@ function TaskEditForm({ task, onUpdateTask }) {
       <input value={task.name} onChange={(event) => onUpdateTask(task.id, { name: event.target.value })} />
       <input value={task.description} onChange={(event) => onUpdateTask(task.id, { description: event.target.value })} />
       <input type="date" value={task.deadlineDate} onChange={(event) => onUpdateTask(task.id, { deadlineDate: event.target.value })} />
+      <select value={task.type} onChange={(event) => onUpdateTask(task.id, { type: event.target.value })}>{TASK_TYPES.map((type) => <option value={type.value} key={type.value}>{type.label}</option>)}</select>
     </div>
   );
 }

@@ -428,6 +428,11 @@ label { display: grid; gap: 8px; color: var(--muted); font-size: 14px; }
   display: grid;
   gap: 16px;
 }
+.task-management-top {
+  display: grid;
+  gap: 16px;
+  margin-bottom: 16px;
+}
 .board-header h2 {
   margin: 4px 0 0;
   font-size: clamp(28px, 3vw, 46px);

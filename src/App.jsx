@@ -399,6 +399,7 @@ export default function App() {
             shareStats={shareStats}
             weeklySummary={weeklySummary}
             monthlySummary={monthlySummary}
+            agendaTasks={agendaTasks}
             onTaskFormChange={setTaskForm}
             onAddTask={addTask}
             onConfigChange={setAiConfig}
@@ -413,6 +414,7 @@ export default function App() {
             onAddStep={addStep}
             onDeleteStep={deleteStep}
             onMoveStep={moveStep}
+            onToggleAgendaTask={toggleAgendaTask}
             onWeekly={() => setWeeklySummary(buildWeeklyRecordSummary(tasks, stepRecords))}
             onMonthly={() => setMonthlySummary(buildMonthlyRecordSummary(tasks, stepRecords))}
             onClear={clearLocalData}
@@ -516,28 +518,39 @@ function getCompletionStreak(stepRecords, tasks) {
 }
 
 function TodayBoard({ agendaTasks, latestRisk, onToggleTask }) {
+  return (
+    <section className="today-board panel">
+      <CommandDateHeader agendaTasks={agendaTasks} />
+      <TodayTaskOverview agendaTasks={agendaTasks} onToggleTask={onToggleTask} emptyText="你还没有待办任务，可以在右侧创建，或直接和我说“创建任务xxx”。" />
+      {latestRisk && <div className="risk-banner">风险提醒：{latestRisk.reason}</div>}
+    </section>
+  );
+}
+
+function CommandDateHeader({ agendaTasks }) {
   const date = new Date();
   const weekday = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'][date.getDay()];
-  const dateText = `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')} ${weekday}`;
+  const dateOnly = `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')}`;
   const { done, total } = getAgendaProgress(agendaTasks);
 
   return (
-    <section className="today-board panel">
-      <div className="board-header">
-        <div>
-          <p className="eyebrow">Today Command Center</p>
-          <h2>{dateText}</h2>
-        </div>
-        <div className="board-score"><strong>{total ? Math.round((done / total) * 100) : 0}%</strong><span>今日完成率</span></div>
+    <div className="board-header">
+      <div>
+        <p className="eyebrow">TODAY COMMAND CENTER / 今日任务中心</p>
+        <h2>{dateOnly}</h2>
+        <p className="muted">{weekday}</p>
       </div>
+      <div className="board-score"><strong>{total ? Math.round((done / total) * 100) : 0}%</strong><span>今日完成率</span></div>
+    </div>
+  );
+}
 
-      <div className="board-block">
-        <h3>今日任务</h3>
-        {agendaTasks.length === 0 ? <div className="empty-state">你还没有待办任务，可以在右侧创建，或直接和我说“创建任务xxx”。</div> : <div className="today-task-list">{agendaTasks.map((task) => <TodayTaskItem key={task.id} task={task} onToggleTask={onToggleTask} />)}</div>}
-      </div>
-
-      {latestRisk && <div className="risk-banner">风险提醒：{latestRisk.reason}</div>}
-    </section>
+function TodayTaskOverview({ agendaTasks, onToggleTask, emptyText }) {
+  return (
+    <div className="board-block">
+      <h3>今日任务</h3>
+      {agendaTasks.length === 0 ? <div className="empty-state">{emptyText}</div> : <div className="today-task-list">{agendaTasks.map((task) => <TodayTaskItem key={task.id} task={task} onToggleTask={onToggleTask} />)}</div>}
+    </div>
   );
 }
 
@@ -701,6 +714,7 @@ function ActiveWorkspace(props) {
     shareStats,
     weeklySummary,
     monthlySummary,
+    agendaTasks,
     onTaskFormChange,
     onAddTask,
     onConfigChange,
@@ -715,6 +729,7 @@ function ActiveWorkspace(props) {
     onAddStep,
     onDeleteStep,
     onMoveStep,
+    onToggleAgendaTask,
     onWeekly,
     onMonthly,
     onClear
@@ -725,10 +740,13 @@ function ActiveWorkspace(props) {
 
   return (
     <section className="panel task-pool-panel">
-      <SectionTitle index="03" title="任务&标签管理" />
-      <div className="motivation">今日激励语：把计划变成下一步，把下一步变成一个可勾选动作。</div>
+      <div className="task-management-top">
+        <CommandDateHeader agendaTasks={agendaTasks} />
+        <TodayTaskOverview agendaTasks={agendaTasks} onToggleTask={onToggleAgendaTask} emptyText="你还没有今日需要关注的任务，可以在下方创建，或直接和我说“创建任务xxx”。" />
+      </div>
       <AddTaskPanel form={taskForm} onChange={onTaskFormChange} onSubmit={onAddTask} />
       {aiNotice && <div className="notice">{aiNotice}</div>}
+      <SectionTitle index="04" title="任务详情 / AI拆解 / 可编辑步骤" />
       <div className="task-columns">
         {TASK_TYPES.map((type) => (
           <div key={type.value}>
@@ -750,6 +768,7 @@ function ActiveWorkspace(props) {
           </div>
         ))}
       </div>
+      <div className="motivation">今日激励语：把计划变成下一步，把下一步变成一个可勾选动作。</div>
     </section>
   );
 }

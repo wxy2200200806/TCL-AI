@@ -54,6 +54,7 @@ export default function App() {
   const [monthlySummary, setMonthlySummary] = useState(null);
   const [activeNav, setActiveNav] = useState('tasks');
   const [dogMessage, setDogMessage] = useState('今天也带着小狗一起推进任务吧。');
+  const [pendingTaskDraft, setPendingTaskDraft] = useState(null);
 
   const selectedTask = tasks.find((task) => task.id === selectedTaskId) || tasks[0];
   const chatScopeId = 'global';
@@ -128,12 +129,26 @@ export default function App() {
     const parsed = parseNaturalTask(text);
     if (!parsed.intentCertain) return '你是想创建任务，还是想咨询这个任务怎么做？';
     if (parsed.missing) return parsed.missing;
-    const task = createTask(parsed.task);
+    setPendingTaskDraft(parsed.task);
+    return '我识别到一个任务草稿，请先在下方确认卡里检查和修改，确认后才会创建。';
+  }
+
+  function confirmPendingTask() {
+    if (!pendingTaskDraft?.name.trim() || !pendingTaskDraft.deadlineDate) return;
+    const task = createTask(pendingTaskDraft);
     setTasks((current) => [...current, task]);
     setSelectedTaskId(task.id);
     addLog('task-added', { taskId: task.id, taskName: task.name });
     setActiveNav('tasks');
-    return '任务已创建，你可以稍后点击 AI拆解，并在拆解前修改任务信息。';
+    setPendingTaskDraft(null);
+    const assistantMessage = { role: 'assistant', content: '任务已创建，你可以稍后点击 AI拆解。', time: new Date().toISOString(), taskId: chatScopeId };
+    setChatMessages((current) => ({ ...current, [chatScopeId]: [...(current[chatScopeId] || []), assistantMessage] }));
+  }
+
+  function cancelPendingTask() {
+    setPendingTaskDraft(null);
+    const assistantMessage = { role: 'assistant', content: '已取消创建任务，没有保存到任务列表。', time: new Date().toISOString(), taskId: chatScopeId };
+    setChatMessages((current) => ({ ...current, [chatScopeId]: [...(current[chatScopeId] || []), assistantMessage] }));
   }
 
   async function decomposeWithAI(task) {
@@ -334,6 +349,7 @@ export default function App() {
             <input value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="输入自然语言指令..." />
             <button className="primary-action compact" onClick={sendQuestion}>发送</button>
           </div>
+          {pendingTaskDraft && <TaskConfirmCard draft={pendingTaskDraft} onChange={setPendingTaskDraft} onConfirm={confirmPendingTask} onCancel={cancelPendingTask} />}
           <div className="summary-actions">
             <button className="secondary-action" onClick={clearCurrentChat}>清空对话</button>
             <button className="secondary-action" onClick={copyLastAssistant}>复制回复</button>
@@ -402,6 +418,23 @@ function NavMenu({ active, onChange }) {
     ['settings', '⚙️', '系统设置']
   ];
   return <nav className="nav-menu">{items.map(([key, icon, label]) => <button key={key} className={active === key ? 'active' : ''} onClick={() => onChange(key)}><span>{icon}</span>{label}</button>)}</nav>;
+}
+
+function TaskConfirmCard({ draft, onChange, onConfirm, onCancel }) {
+  return (
+    <section className="task-confirm-card">
+      <h3>任务确认卡</h3>
+      <p className="muted">我只是先识别出了草稿。请修改确认后再创建任务。</p>
+      <label>任务名称<input value={draft.name} onChange={(event) => onChange({ ...draft, name: event.target.value })} /></label>
+      <label>任务说明<input value={draft.description} onChange={(event) => onChange({ ...draft, description: event.target.value })} /></label>
+      <label>任务类型<select value={draft.type} onChange={(event) => onChange({ ...draft, type: event.target.value })}>{TASK_TYPES.map((type) => <option value={type.value} key={type.value}>{type.label}</option>)}</select></label>
+      <label>截止日期<input type="date" value={draft.deadlineDate} onChange={(event) => onChange({ ...draft, deadlineDate: event.target.value })} /></label>
+      <div className="summary-actions">
+        <button className="primary-action" onClick={onConfirm}>确认创建</button>
+        <button className="secondary-action" onClick={onCancel}>取消</button>
+      </div>
+    </section>
+  );
 }
 
 function TaskDog({ stepRecords, tasks, message, onInteract }) {

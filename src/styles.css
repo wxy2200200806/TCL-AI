@@ -550,6 +550,22 @@ label { display: grid; gap: 8px; color: var(--muted); font-size: 14px; }
   background: rgba(255, 255, 255, 0.055);
   color: var(--text);
 }
+.task-confirm-card {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid rgba(56, 222, 254, 0.28);
+  border-radius: 18px;
+  background: rgba(56, 222, 254, 0.08);
+}
+.task-confirm-card h3 {
+  color: var(--cyan);
+}
+.task-confirm-card .summary-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
 .center-board .task-pool-panel,
 .center-board .visual-panel,
 .center-board .summary-panel,

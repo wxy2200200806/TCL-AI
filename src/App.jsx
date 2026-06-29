@@ -552,9 +552,16 @@ function getAgendaProgress(tasks) {
 }
 
 function getSortedAgendaTasks(tasks) {
+  const today = todayISO();
   return tasks
-    .filter((task) => task.status !== '已完成' || task.completedDate === todayISO())
+    .filter((task) => shouldShowOnDashboard(task, today))
     .sort((a, b) => getSortRank(a) - getSortRank(b) || getDaysLeft(a.deadlineDate) - getDaysLeft(b.deadlineDate) || a.createdAt.localeCompare(b.createdAt));
+}
+
+function shouldShowOnDashboard(task, today) {
+  if (task.status === '已完成') return task.completedDate === today;
+  const days = getDaysLeft(task.deadlineDate, today);
+  return task.type === 'today' || days <= 0;
 }
 
 function getSortRank(task) {
@@ -650,17 +657,35 @@ function toLocalISO(date) {
 }
 
 function TodayTaskItem({ task, onToggleTask }) {
-  const daysText = getDaysText(task.deadlineDate);
+  const progress = getProgress(task);
   const checked = task.status === '已完成';
+  const hasSteps = task.steps.length > 0;
   return (
     <article className="today-item">
       <label className="today-step whole-task overview-task">
         <input type="checkbox" checked={checked} onChange={(event) => onToggleTask(task, event.target.checked)} />
-        <span>{task.name}</span>
+        <span className={checked ? 'task-name done' : 'task-name'}>{task.name}</span>
       </label>
-      <div className="overview-meta"><span>{checked ? '已完成' : daysText}</span><span>{task.steps.length ? '已拆分' : '未拆分'}</span></div>
+      <div className="overview-meta">
+        <span className={getDashboardTagClass(task)}>{getDashboardTypeTag(task)}</span>
+        <span>{checked ? '已完成' : getDaysText(task.deadlineDate)}</span>
+        {hasSteps && <span>{progress.done}/{progress.total}</span>}
+      </div>
     </article>
   );
+}
+
+function getDashboardTypeTag(task) {
+  if (task.status !== '已完成' && getDaysLeft(task.deadlineDate) < 0) return '逾期';
+  if (task.type === 'today') return '今日';
+  if (task.type === 'short') return '短期';
+  if (task.type === 'long') return '长期';
+  return getTaskTypeLabel(task.type);
+}
+
+function getDashboardTagClass(task) {
+  if (task.status !== '已完成' && getDaysLeft(task.deadlineDate) < 0) return 'agenda-tag overdue';
+  return `agenda-tag ${task.type}`;
 }
 
 function ActiveWorkspace(props) {
